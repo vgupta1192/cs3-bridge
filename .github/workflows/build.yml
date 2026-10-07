@@ -32,7 +32,9 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build installDist
-        run: ./gradlew --no-daemon :bridge:installDist
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon :bridge:installDist 2>&1 | tee build.log
 
       - name: Zip dist
         run: |
@@ -45,4 +47,13 @@ jobs:
           tag_name: build
           name: bridge build
           files: cs3-bridge-dist-r${{ github.run_number }}.zip
+          fail_on_unmatched_files: true
+
+      - name: Publish debug logs
+        if: failure()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: debug-logs
+          name: debug logs
+          files: build.log
           fail_on_unmatched_files: true
