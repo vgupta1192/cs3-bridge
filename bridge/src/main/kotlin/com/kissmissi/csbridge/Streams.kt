@@ -14,9 +14,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.common.logging.AppLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
@@ -70,8 +68,10 @@ class BridgeConfig(
 
 object Streams {
     private val mapper = jacksonObjectMapper()
-    private const val STREAM_TTL = 6L * 3600 * 1000
 
+    // Detached scope: scraping outlives the HTTP request so slow providers never
+    // block the response; whatever arrives before the deadline is returned.
+    private val scrapeScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
 
     fun b64(s: String): String = Base64.getUrlEncoder().withoutPadding().encodeToString(s.toByteArray())
     fun unb64(s: String): String {
@@ -103,10 +103,21 @@ object Streams {
     }
 
 
+    private fun qualityLabel(q: Int): String = when {
+        q >= 2160 -> "4K"
+        q >= 1440 -> "1440p"
+        q >= 1080 -> "1080p"
+        q >= 720 -> "720p"
+        q >= 480 -> "480p"
+        q >= 360 -> "360p"
+        q > 0 -> "${q}p"
+        else -> ""
+    }
+
     private val camRegex = Regex("(?i)\\b(cam|hdcam|hd-cam|hdts|telecine|telesync|screener|ts)\\b")
 
     private fun isCam(link: ExtractorLink): Boolean =
-        camRegex.containsMatchIn(link.name) || camRegex.containsMatchIn(link.source) || link.quality in 1..479 && camRegex.containsMatchIn(link.url)
+        camRegex.containsMatchIn(link.name) || camRegex.containsMatchIn(link.source) || (link.quality in 1..479 && camRegex.containsMatchIn(link.url))
 
     private fun tierOf(link: ExtractorLink): Int = when {
         link.quality >= 2160 -> 2160
@@ -117,7 +128,7 @@ object Streams {
         else -> 0
     }
 
-    /** Apply the formatter preset; returns (name, title, description). */
+    /** Apply the formatter preset; returns (name line, title line). */
     private fun format(cfg: BridgeConfig, provider: String, link: ExtractorLink, q: String): Pair<String, String> = when {
         cfg.fmt == "modern" -> Pair(if (q.isBlank()) provider else "$provider\n$q", link.name)
         cfg.fmt == "minimal" -> Pair(if (q.isBlank()) "CSB" else "CSB $q", link.name)
@@ -127,17 +138,6 @@ object Streams {
             Pair(tpl(parts.getOrElse(0) { "{provider} {quality}" }), tpl(parts.getOrElse(1) { "{link}" }))
         }
         else -> Pair(if (q.isBlank()) "CSB" else "CSB $q", "$provider • ${link.name}")
-    }
-
-    private fun qualityLabel(q: Int): String = when {
-        q >= 2160 -> "4K"
-        q >= 1440 -> "1440p"
-        q >= 1080 -> "1080p"
-        q >= 720 -> "720p"
-        q >= 480 -> "480p"
-        q >= 360 -> "360p"
-        q > 0 -> "${q}p"
-        else -> ""
     }
 
 
@@ -205,9 +205,7 @@ object Streams {
 
     private suspend fun scrapeProvider(
         prov: MainAPI,
-        label: String,
         titleInfo: TitleInfo?,
-        kind: String,
         season: Int?,
         episode: Int?,
         matchUrl: String? = null,
@@ -223,118 +221,114 @@ object Streams {
     }
 
 
-    /** Main entry: streams for a stremio-style request. */
+    /** Main entry: streams for a stremio-style request. Returns after the deadline; scraping continues detached. */
     fun streamsFor(cfg: BridgeConfig, kind: String, id: String): List<Map<String, Any?>> {
         val t0 = System.currentTimeMillis()
         val deadline = cfg.deadlineMs ?: Cfg.deadlineMs
-        val result = runBlocking {
-            withTimeoutOrNull(deadline + 8000) { fetchAll(cfg, kind, id, deadline) }
-        } ?: emptyList()
+        val channel = Channel<Pair<String, List<ExtractorLink>>>(Channel.UNLIMITED)
+        val collected = ArrayList<Pair<String, List<ExtractorLink>>>()
+
+        scrapeScope.launch { fetchAll(cfg, kind, id, channel) }
+
+        runBlocking {
+            val start = System.currentTimeMillis()
+            while (System.currentTimeMillis() - start < deadline) {
+                val remaining = deadline - (System.currentTimeMillis() - start)
+                val got = withTimeoutOrNull(remaining) { channel.receive() } ?: break
+                collected.add(got)
+            }
+        }
+
+        val result = buildResult(cfg, collected)
         AppLogger.i("Streams: $kind/$id -> ${result.size} streams in ${System.currentTimeMillis() - t0} ms")
         return result
     }
 
-    private suspend fun fetchAll(cfg: BridgeConfig, kind: String, id: String, deadlineMs: Long): List<Map<String, Any?>> =
-        coroutineScope {
-            val channel = Channel<Pair<String, List<ExtractorLink>>>(Channel.UNLIMITED)
-            val jobs = ArrayList<Job>()
-            val sem = Semaphore(Cfg.maxConcurrent)
+    private fun buildResult(cfg: BridgeConfig, collected: List<Pair<String, List<ExtractorLink>>>): List<Map<String, Any?>> {
+        data class Row(val stream: Map<String, Any?>, val label: String, val link: ExtractorLink)
+        val rank = cfg.order.withIndex().associate { it.value.lowercase() to it.index }
+        var rows = ArrayList<Row>()
+        val seen = HashSet<String>()
+        for ((label, links) in collected) {
+            for (link in links) {
+                if (cfg.blockCam && isCam(link)) continue
+                val tier = tierOf(link)
+                if (tier != 0 && tier !in cfg.qualities) continue
+                val st = toStremioStream(link, label, cfg) ?: continue
+                if (seen.add(link.url)) rows.add(Row(st, label, link))
+            }
+        }
+        rows.sortBy { rank[it.label.lowercase()] ?: 1000 }
+        if (cfg.maxPerTier > 0) {
+            val counts = HashMap<Int, Int>()
+            rows = ArrayList(rows.filter {
+                val t = tierOf(it.link)
+                if (t == 0) true else run { val n = (counts[t] ?: 0) + 1; counts[t] = n; n <= cfg.maxPerTier }
+            })
+        }
+        return rows.map { it.stream }
+    }
 
-            fun CoroutineScope.launchProvider(label: String, work: suspend () -> List<ExtractorLink>) {
-                jobs += launch(Dispatchers.IO) {
+    private suspend fun fetchAll(cfg: BridgeConfig, kind: String, id: String, channel: Channel<Pair<String, List<ExtractorLink>>>) {
+        val sem = Semaphore(Cfg.maxConcurrent)
+
+        fun launchProvider(label: String, work: suspend () -> List<ExtractorLink>) {
+            scrapeScope.launch(Dispatchers.IO) {
+                try {
+                    sem.acquire()
                     try {
-                        sem.acquire()
-                        try {
-                            val res = work()
-                            if (res.isNotEmpty()) channel.send(label to res)
-                        } finally {
-                            sem.release()
-                        }
-                    } catch (_: Throwable) {
+                        val res = work()
+                        if (res.isNotEmpty()) channel.send(label to res)
+                    } finally {
+                        sem.release()
                     }
+                } catch (_: Throwable) {
                 }
             }
+        }
 
 
-            var requestedS: Int? = null
-            var requestedE: Int? = null
-            if (id.startsWith("csb:")) {
-                val parts = id.split(":")
-                if (parts.size >= 3) {
-                    val provName = parts[1]
-                    val url = runCatching { unb64(parts[2]) }.getOrNull()
-                    requestedS = parts.getOrNull(3)?.toIntOrNull()
-                    requestedE = parts.getOrNull(4)?.toIntOrNull()
-                    if (url != null) {
-                        for ((info, provs) in Repos.enabledProviders(cfg.providers)) {
-                            if (info.internalName != provName) continue
-                            for (prov in provs) {
-                                launchProvider(info.name) {
-                                    val loaded = prov.load(url)
-                                    linksFromResponse(prov, loaded, requestedS, requestedE)
-                                }
+        if (id.startsWith("csb:")) {
+            val parts = id.split(":")
+            if (parts.size >= 3) {
+                val provName = parts[1]
+                val url = runCatching { unb64(parts[2]) }.getOrNull()
+                val requestedS = parts.getOrNull(3)?.toIntOrNull()
+                val requestedE = parts.getOrNull(4)?.toIntOrNull()
+                if (url != null) {
+                    for ((info, provs) in Repos.enabledProviders(cfg.providers)) {
+                        if (info.internalName != provName) continue
+                        for (prov in provs) {
+                            launchProvider(info.name) {
+                                val loaded = runCatching { prov.load(url) }.getOrNull()
+                                linksFromResponse(prov, loaded, requestedS, requestedE)
                             }
                         }
                     }
                 }
+            }
+        } else {
+            val imdb = id.substringBefore(":")
+            val requestedS = id.split(":").getOrNull(1)?.toIntOrNull()
+            val requestedE = id.split(":").getOrNull(2)?.toIntOrNull()
+            val titleInfo = Resolver.resolve(kind, imdb)
+            if (titleInfo == null) {
+                AppLogger.i("Streams: could not resolve $kind/$imdb")
             } else {
-                val imdb = id.substringBefore(":")
-                requestedS = id.split(":").getOrNull(1)?.toIntOrNull()
-                requestedE = id.split(":").getOrNull(2)?.toIntOrNull()
-                val titleInfo = Resolver.resolve(kind, imdb)
-                if (titleInfo == null) {
-                    AppLogger.i("Streams: could not resolve $kind/$imdb")
-                } else {
-                    val want: Set<TvType> = if (kind == "movie")
-                        setOf(TvType.Movie, TvType.AnimeMovie)
-                    else
-                        setOf(TvType.TvSeries, TvType.Anime, TvType.Cartoon, TvType.OVA, TvType.AsianDrama, TvType.Documentary)
-                    val rank = cfg.order.withIndex().associate { it.value.lowercase() to it.index }
-                    val pairs = Repos.enabledProviders(cfg.providers).flatMap { (info, provs) ->
-                        provs.filter { it.supportedTypes.intersect(want).isNotEmpty() }.map { info to it }
-                    }.sortedBy { rank[it.first.name.lowercase()] ?: 1000 }
-                    for ((info, prov) in pairs) {
-                        launchProvider(info.name) {
-                            scrapeProvider(prov, info.name, titleInfo, kind, requestedS, requestedE)
-                        }
+                val want: Set<TvType> = if (kind == "movie")
+                    setOf(TvType.Movie, TvType.AnimeMovie)
+                else
+                    setOf(TvType.TvSeries, TvType.Anime, TvType.Cartoon, TvType.OVA, TvType.AsianDrama, TvType.Documentary)
+                val rank = cfg.order.withIndex().associate { it.value.lowercase() to it.index }
+                val pairs = Repos.enabledProviders(cfg.providers).flatMap { (info, provs) ->
+                    provs.filter { it.supportedTypes.intersect(want).isNotEmpty() }.map { info to it }
+                }.sortedBy { rank[it.first.name.lowercase()] ?: 1000 }
+                for ((info, prov) in pairs) {
+                    launchProvider(info.name) {
+                        scrapeProvider(prov, titleInfo, requestedS, requestedE)
                     }
                 }
             }
-
-
-            // collect until deadline
-            val collected = ArrayList<Pair<String, List<ExtractorLink>>>()
-            val start = System.currentTimeMillis()
-            while (collected.size < jobs.size) {
-                val remaining = deadlineMs - (System.currentTimeMillis() - start)
-                if (remaining <= 0) break
-                val got = withTimeoutOrNull(remaining) { channel.receive() } ?: break
-                collected.add(got)
-            }
-            jobs.forEach { it.cancel() }
-
-
-            // map + filter
-            data class Row(val stream: Map<String, Any?>, val label: String, val link: ExtractorLink)
-            val rank = cfg.order.withIndex().associate { it.value.lowercase() to it.index }
-            var rows = ArrayList<Row>()
-            val seen = HashSet<String>()
-            for ((label, links) in collected) {
-                for (link in links) {
-                    if (cfg.blockCam && isCam(link)) continue
-                    val tier = tierOf(link)
-                    if (tier != 0 && tier !in cfg.qualities) continue
-                    val st = toStremioStream(link, label, cfg) ?: continue
-                    if (seen.add(link.url)) rows.add(Row(st, label, link))
-                }
-            }
-            // provider order (stable): ordered providers first, then the rest
-            rows.sortBy { rank[it.label.lowercase()] ?: 1000 }
-            // max per quality tier
-            if (cfg.maxPerTier > 0) {
-                val counts = HashMap<Int, Int>()
-                rows = ArrayList(rows.filter { val t = tierOf(it.link); if (t == 0) true else run { val n = (counts[t] ?: 0) + 1; counts[t] = n; n <= cfg.maxPerTier } })
-            }
-            rows.map { it.stream }
         }
+    }
 }
