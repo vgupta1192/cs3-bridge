@@ -11,7 +11,7 @@ package com.lagradost.cloudstream3.syncproviders
  * everything returns "not logged in".
  */
 open class SyncRepo(val api: SyncAPI) {
-    open fun getApi(): SyncAPI = api
+    // `val api` provides the getApi() JVM signature plugins call
 
     open fun authUser(): AuthUser? = null
 
