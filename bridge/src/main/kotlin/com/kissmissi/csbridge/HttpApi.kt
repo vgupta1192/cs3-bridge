@@ -128,6 +128,30 @@ object HttpApi {
                 }.apply { isDaemon = true; name = "manual-resync" }.start()
                 sendJson(ex, 200, mapOf("ok" to true, "message" to "resync started"))
             }
+            "formatter" -> when (segs.getOrNull(2)) {
+                "presets" -> sendJson(ex, 200, Formatter.presets())
+                "preview" -> {
+                    val body = runCatching {
+                        mapper.readValue<Map<String, Any?>>(ex.requestBody.readBytes().toString(Charsets.UTF_8))
+                    }.getOrNull() ?: emptyMap()
+                    val preset = body["preset"] as? String
+                    val name = body["name"] as? String ?: ""
+                    val desc = body["description"] as? String ?: ""
+                    val tpl: Formatter.Templates? = when {
+                        !preset.isNullOrBlank() && preset != "custom" && preset != "builtin" ->
+                            runCatching { Formatter.templates(preset, null, null) }.getOrNull()
+                        name.isNotBlank() || desc.isNotBlank() -> Formatter.Templates(name, desc)
+                        else -> null
+                    }
+                    if (tpl == null || (tpl.name.isBlank() && tpl.description.isBlank())) {
+                        sendJson(ex, 200, mapOf("ok" to false, "error" to "template required"))
+                    } else {
+                        sendJson(ex, 200, runCatching { Formatter.preview(tpl.name, tpl.description) }
+                            .getOrElse { mapOf("ok" to false, "error" to (it.message ?: "preview failed")) })
+                    }
+                }
+                else -> sendJson(ex, 404, mapOf("error" to "unknown api"))
+            }
             else -> sendJson(ex, 404, mapOf("error" to "unknown api"))
         }
     }

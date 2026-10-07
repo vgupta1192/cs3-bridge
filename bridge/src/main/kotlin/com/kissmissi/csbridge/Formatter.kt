@@ -1,0 +1,90 @@
+package com.kissmissi.csbridge
+
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
+import org.graalvm.polyglot.Context
+import org.graalvm.polyglot.Value
+
+/**
+ * AIOStreams custom-formatter engine (vendored bundle in resources/formatter,
+ * same one Stream Master ships) running inside GraalJS. One shared Context
+ * guarded by a lock — renders are pure string work and the engine caches
+ * compiled templates, so this never approaches the scrape deadline. Everything
+ * crossing the polyglot boundary is a JSON string, so no host access is
+ * enabled on the context.
+ *
+ * Concatenation order matters: the FIELD_REGISTRY.stream mutation must sit
+ * between the engine bundle and the glue, because the engine builds its
+ * canonical-field map while it evaluates.
+ */
+object Formatter {
+    private val mapper = jacksonObjectMapper()
+    private val lock = Any()
+
+    @Volatile
+    private var api: Value? = null
+
+    data class Templates(val name: String, val description: String)
+    data class Rendered(val name: String, val description: String)
+
+    private fun script(name: String): String =
+        javaClass.getResourceAsStream("/formatter/$name")
+            ?.readBytes()?.toString(Charsets.UTF_8)
+            ?: throw IllegalStateException("missing resource /formatter/$name")
+
+    private fun ensure(): Value {
+        api?.let { return it }
+        synchronized(lock) {
+            api?.let { return it }
+            val ctx = Context.newBuilder("js")
+                .option("js.ecmascript-version", "2023")
+                .build()
+            val combined = script("csb-prelude.js") + "\n" +
+                script("aiostreams-formatter.js") + "\n" +
+                "FIELD_REGISTRY.stream.push('linkName', 'source');\n" +
+                "var __PENGUPLAY_PRESETS = " + script("penguplay-presets.json") + ";\n" +
+                script("csb-glue.js")
+            ctx.eval("js", combined)
+            val bound = ctx.getBindings("js").getMember("__CSB")
+            require(bound != null && !bound.isNull) { "formatter glue did not define __CSB" }
+            api = bound
+            return bound
+        }
+    }
+
+    /** Resolve a formatter config to templates; null = built-in naming. */
+    fun templates(f: String, n: String?, d: String?): Templates? {
+        val res = synchronized(lock) { ensure().getMember("templates").execute(f, n ?: "", d ?: "") }
+        if (res.isNull) return null
+        return mapper.readValue<Templates>(res.asString())
+    }
+
+    /** Render one stream; meta = raw ExtractorLink fields, the glue parses them. */
+    fun render(t: Templates, metaJson: String, ctxJson: String): Rendered {
+        val res = synchronized(lock) { ensure().getMember("render").execute(t.name, t.description, metaJson, ctxJson) }
+        return mapper.readValue<Rendered>(res.asString())
+    }
+
+    /** {presets: [{id,label,family,name,description}], fields: {section: [props]}} */
+    fun presets(): Map<String, Any?> {
+        val res = synchronized(lock) { ensure().getMember("presets").execute() }
+        return mapper.readValue(res.asString())
+    }
+
+    /** {ok, samples: [{label,name,description}], diagnostics: {name: [], description: []}} */
+    fun preview(name: String, description: String): Map<String, Any?> {
+        val samples = synchronized(lock) { ensure().getMember("preview").execute(name, description).asString() }
+        val diag = synchronized(lock) { ensure().getMember("validate").execute(name, description).asString() }
+        return linkedMapOf(
+            "ok" to true,
+            "samples" to mapper.readValue<List<Map<String, Any?>>>(samples),
+            "diagnostics" to mapper.readValue<Map<String, Any?>>(diag),
+        )
+    }
+
+    /** Fail-fast at boot (background thread): engine loads and renders. */
+    fun warmup() {
+        val t = templates("csb-minimal", null, null) ?: throw IllegalStateException("csb-minimal did not resolve")
+        render(t, """{"provider":"Warmup","quality":1080,"url":"https://warmup/video.mkv"}""", "{}")
+    }
+}

@@ -116,6 +116,22 @@ tr:last-child td { border-bottom:none; }
 .preview { background:var(--bg); border:1px dashed var(--border-focus); border-radius:10px; padding:12px 14px; margin-top:12px; font-size:12.5px; line-height:1.7; }
 .preview .l1 { font-weight:700; color:var(--text); white-space:pre-line; }
 .preview .l2 { color:var(--text-dim); }
+.chips-wrap { display:flex; flex-direction:column; gap:6px; }
+.famlab { color:var(--text-dim); font-size:10.5px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; margin-top:8px; }
+.chiprow { display:flex; gap:6px; flex-wrap:wrap; }
+label.lbl { display:block; color:var(--text-sub); font-size:12.5px; font-weight:600; margin:14px 0 5px; }
+textarea { background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:10px 12px; font-family:inherit; font-size:13px; outline:none; }
+textarea:focus { border-color:var(--accent); }
+textarea.tpl { width:100%; min-height:96px; font-family:ui-monospace,monospace; font-size:12px; line-height:1.65; resize:vertical; }
+textarea.tpl.small { min-height:64px; }
+.diag { color:var(--text-dim); font-size:11.5px; margin-top:4px; white-space:pre-line; }
+.diag.bad { color:var(--red); }
+.pvcard { background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin-bottom:8px; }
+.pvcard .tag { display:inline-block; background:var(--accent-glow); color:var(--accent); font-size:10px; font-weight:700; border-radius:999px; padding:2px 8px; margin-bottom:4px; }
+.pvcard .nm { font-weight:700; font-size:13px; white-space:pre-line; }
+.pvcard .ds { color:var(--text-dim); font-size:12px; margin-top:3px; white-space:pre-line; line-height:1.55; }
+.fields { columns:2; column-gap:22px; font-size:10.5px; color:var(--text-dim); line-height:1.7; font-family:ui-monospace,monospace; margin-top:10px; }
+@media (max-width:760px){ .fields { columns:1; } }
 .spin { display:inline-block; width:12px; height:12px; border:2px solid var(--text-dim); border-top-color:var(--accent); border-radius:50%; animation:sp 1s linear infinite; vertical-align:-2px; }
 @keyframes sp { to { transform:rotate(360deg); } }
 @media (max-width:760px) {
@@ -259,25 +275,48 @@ tr:last-child td { border-bottom:none; }
     <!-- FORMATTER -->
     <div class="page" id="page-formatter">
       <h2>Stream formatter</h2>
-      <div class="psub">Choose how stream names and details look in Stremio — pick a preset or write your own.</div>
+      <div class="psub">Choose how stream names and details look in Stremio. Templates use the <b>AIOStreams</b> custom-formatter syntax — PenguPlay uses the same engine — rendered by AIOStreams' own formatter engine. All community presets below work unchanged.</div>
       <section class="card">
-        <div class="sec-head"><div class="sec-title">Preset</div></div>
-        <select id="fmt" style="width:100%">
-          <option value="original">Original names (no formatting)</option>
-          <option value="modern">Preset: ✨ CloudStream Modern</option>
-          <option value="minimal">Preset: ⚡ Minimal (Torrentio-style)</option>
-          <option value="custom">Custom (write your own)</option>
-        </select>
-        <div id="customBox" style="display:none;margin-top:12px">
-          <div class="psub" style="margin-bottom:6px">Name line and title line templates. Tokens: {provider} {quality} {link}</div>
-          <input id="fmt-name" style="width:100%;margin-bottom:8px" value="{provider} {quality}">
-          <input id="fmt-title" style="width:100%" value="{link}">
+        <div class="sec-head">
+          <div class="sec-title">Formatter<small>pick a preset or write your own</small></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn small" id="bImport">Import JSON</button>
+            <button class="btn small" id="bExport">Copy as JSON</button>
+          </div>
         </div>
-        <div class="preview">
-          <div class="l1" id="pv-name"></div>
-          <div class="l2" id="pv-title"></div>
+        <div id="presetChips" class="chips-wrap"><span class="spin"></span> loading presets…</div>
+        <div id="jsonBox" style="display:none;margin-top:10px">
+          <textarea id="json" class="tpl small" placeholder='{"name": "...", "description": "..."}'></textarea>
+          <div class="actions"><button class="btn primary small" id="bJsonApply">Apply JSON</button></div>
+          <div class="diag bad" id="jsonErr"></div>
         </div>
+        <label class="lbl" for="fmt-n">Stream name template</label>
+        <textarea id="fmt-n" class="tpl" spellcheck="false" placeholder="e.g. 🎯 CSB {stream.resolution}"></textarea>
+        <div class="diag" id="diag-n"></div>
+        <label class="lbl" for="fmt-d">Stream description template</label>
+        <textarea id="fmt-d" class="tpl" spellcheck="false" placeholder="e.g. {stream.filename}"></textarea>
+        <div class="diag" id="diag-d"></div>
+        <div class="note">Selecting a preset loads it into the editors — any edit turns it into a custom template. Changing the formatter generates a new addon URL; re-add the addon to switch an existing install.</div>
       </section>
+      <section class="card">
+        <div class="sec-head">
+          <div class="sec-title">Preview<small>how Stremio lists the streams</small></div>
+          <button class="btn small" id="pv-refresh">↻ Refresh</button>
+        </div>
+        <div id="pvCards"><div class="note">Pick a preset or write a template to see a live preview.</div></div>
+      </section>
+      <details class="card">
+        <summary style="cursor:pointer;font-weight:700">Template syntax &amp; fields</summary>
+        <div class="note" style="margin-top:10px">
+          <code>{stream.resolution}</code> field · <code>{stream.size::sbytes}</code> modifier chain ·
+          <code>{stream.fast["⚡"||"🐢"]}</code> conditional (true / false branches) · <code>{?📦 {stream.size}?}</code> optional group (hidden when empty) ·
+          <code>{tools.newLine}</code> / <code>{tools.removeLine}</code> ·
+          CloudStream Bridge extras: <code>stream.linkName</code>, <code>stream.source</code>.
+          Full reference: <a style="color:var(--accent)" href="https://docs.aiostreams.viren070.me/reference/custom-formatter/" target="_blank" rel="noopener">AIOStreams custom formatter</a>.
+          Note: this bridge doesn't measure link speed, so <code>stream.speed</code> / <code>stream.speedLabel</code> are always empty.
+        </div>
+        <div class="fields" id="fieldsList"></div>
+      </details>
     </div>
 
     <!-- STATUS -->
@@ -333,10 +372,27 @@ tr:last-child td { border-bottom:none; }
 </div>
 <script>
 let DATA = null;
-let state = { p: {}, c: true, m: false, d: 25000, q: { on: [2160,1080,720,480,360], tier: 0, cam: 0 }, fmt: 'original', fmtName: '{provider} {quality}', fmtTitle: '{link}', order: [] };
+let state = { p: {}, c: true, m: false, d: 25000, q: { on: [2160,1080,720,480,360], tier: 0, cam: 0 }, f: 'builtin', n: '', d: '', order: [] };
 const B64 = s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const THEMES = ['slate','charcoal','navy','forest'];
 try { const s = localStorage.getItem('csb_state2'); if (s) state = Object.assign(state, JSON.parse(s)); } catch(e) {}
+// migrate the pre-AIOStreams formatter keys to the preset/custom scheme
+(function migrateFmt() {
+  if (state.fmt !== undefined) {
+    const old = String(state.fmt);
+    const tok = t => String(t||'').replace('{provider}','{stream.provider}').replace('{quality}','{stream.resolution}').replace('{link}','{stream.filename}');
+    if (old === 'modern') state.f = 'csb-modern';
+    else if (old === 'minimal') state.f = 'csb-minimal';
+    else if (old.startsWith('custom:')) {
+      const parts = old.slice(7).split('|');
+      state.f = 'custom';
+      state.n = tok(parts[0]); state.d = tok(parts[1] || '');
+    } else state.f = 'builtin';
+    delete state.fmt; delete state.fmtName; delete state.fmtTitle;
+  }
+  if (!state.f) state.f = 'builtin';
+  if (state.f === 'custom' && !state.n && !state.d) state.f = 'builtin';
+})();
 document.documentElement.dataset.baseTheme = localStorage.getItem('csb_theme') || 'slate';
 document.getElementById('themeLabel').textContent = 'Theme: ' + document.documentElement.dataset.baseTheme.charAt(0).toUpperCase() + document.documentElement.dataset.baseTheme.slice(1);
 document.getElementById('themeBtn').onclick = () => {
@@ -360,8 +416,10 @@ function repoOf(p){ return ((DATA&&DATA.repos)||[]).find(r => r.plugins.indexOf(
 function save(){ localStorage.setItem('csb_state2', JSON.stringify(state)); }
 function gen() {
   const cfg = Object.assign({}, state);
-  delete cfg.fmtName; delete cfg.fmtTitle;
-  if (cfg.fmt === 'custom') { cfg.fmt = 'custom:' + (state.fmtName||'') + '|' + (state.fmtTitle||''); }
+  delete cfg.f; delete cfg.n; delete cfg.d;
+  delete cfg.fmt; delete cfg.fmtName; delete cfg.fmtTitle;
+  if (state.f === 'custom') cfg.fmt = { f: 'custom', n: state.n || '', d: state.d || '' };
+  else if (state.f && state.f !== 'builtin') cfg.fmt = { f: state.f };
   const url = location.origin + '/' + B64(JSON.stringify(cfg)) + '/manifest.json';
   document.getElementById('murl').value = url;
 }
@@ -426,23 +484,109 @@ function renderFiltersPage() {
   document.getElementById('opt-m').checked = !!state.m;
   document.getElementById('opt-d').value = String(state.d || 25000);
 }
-function renderFormatter() {
-  document.getElementById('fmt').value = ['original','modern','minimal'].indexOf(state.fmt) >= 0 ? state.fmt : 'custom';
-  document.getElementById('customBox').style.display = state.fmt.startsWith('custom') ? 'block' : 'none';
-  document.getElementById('fmt-name').value = state.fmtName || '{provider} {quality}';
-  document.getElementById('fmt-title').value = state.fmtTitle || '{link}';
-  const provider = 'VegaMovies', quality = '1080p', link = 'Movie.Name.2024.1080p.WEB-DL.mkv';
-  let n, t;
-  const f = state.fmt.startsWith('custom') ? 'custom' : state.fmt;
-  if (f === 'modern') { n = provider + '\n' + quality; t = link; }
-  else if (f === 'minimal') { n = 'CSB ' + quality; t = link; }
-  else if (f === 'custom') {
-    const tpl = s => s.replace('{provider}', provider).replace('{quality}', quality).replace('{link}', link);
-    n = tpl(state.fmtName || ''); t = tpl(state.fmtTitle || '');
-  } else { n = 'CSB ' + quality; t = provider + ' • ' + link; }
-  document.getElementById('pv-name').textContent = n;
-  document.getElementById('pv-title').textContent = t;
+// ---------- formatter (AIOStreams engine, presets + custom + preview) ----------
+let PRESETS = [];
+function presetById(id){ return PRESETS.find(p => p.id === id); }
+async function loadFormatter() {
+  try {
+    const r = await fetch('/api/formatter/presets'); const d = await r.json();
+    PRESETS = d.presets || [];
+    renderPresetChips();
+    const fl = document.getElementById('fieldsList');
+    fl.innerHTML = Object.entries(d.fields || {}).map(([sec, props]) => props.map(p => sec + '.' + p).join('<br>')).join('<br>');
+  } catch(e) {
+    document.getElementById('presetChips').innerHTML = '<div class="diag bad">could not load presets</div>';
+  }
+  fmtApplySelection();
 }
+function renderPresetChips() {
+  const wrap = document.getElementById('presetChips');
+  let html = '<div class="famlab">Built-in</div><div class="chiprow">'
+    + '<button class="chipbtn" data-f="builtin">Original names (no formatter)</button>'
+    + '<button class="chipbtn" data-f="custom">✏️ Custom template</button></div>';
+  for (const fam of ['CloudStream Bridge', 'AIOStreams', 'PenguPlay']) {
+    const ps = PRESETS.filter(p => p.family === fam);
+    if (!ps.length) continue;
+    html += '<div class="famlab">' + esc(fam) + '</div><div class="chiprow">'
+      + ps.map(p => '<button class="chipbtn" data-f="' + esc(p.id) + '" title="' + esc((p.name||'').slice(0, 120)) + '">' + esc(p.label) + '</button>').join('')
+      + '</div>';
+  }
+  wrap.innerHTML = html;
+  wrap.querySelectorAll('[data-f]').forEach(b => b.onclick = () => chooseFmt(b.dataset.f));
+  markFmtChips();
+}
+function markFmtChips() {
+  document.querySelectorAll('#presetChips [data-f]').forEach(b => b.classList.toggle('sel', b.dataset.f === state.f));
+}
+function chooseFmt(f) {
+  state.f = f;
+  if (f === 'custom') {
+    // keep whatever is in the editors
+  } else if (f !== 'builtin') {
+    const p = presetById(f);
+    if (p) { document.getElementById('fmt-n').value = p.name || ''; document.getElementById('fmt-d').value = p.description || ''; }
+  }
+  save(); markFmtChips(); gen(); schedulePreview();
+}
+function fmtApplySelection() {
+  if (state.f === 'custom') {
+    document.getElementById('fmt-n').value = state.n || '';
+    document.getElementById('fmt-d').value = state.d || '';
+  } else if (state.f && state.f !== 'builtin') {
+    const p = presetById(state.f);
+    if (p) { document.getElementById('fmt-n').value = p.name || ''; document.getElementById('fmt-d').value = p.description || ''; }
+    else state.f = 'builtin';
+  }
+  markFmtChips(); gen(); schedulePreview();
+}
+function onEditFmt() {
+  if (state.f !== 'custom') { state.f = 'custom'; markFmtChips(); }
+  state.n = document.getElementById('fmt-n').value;
+  state.d = document.getElementById('fmt-d').value;
+  save(); gen(); schedulePreview();
+}
+let pvTimer = null;
+function schedulePreview(){ clearTimeout(pvTimer); pvTimer = setTimeout(refreshPreview, 350); }
+async function refreshPreview() {
+  const n = document.getElementById('fmt-n').value, d = document.getElementById('fmt-d').value;
+  const box = document.getElementById('pvCards');
+  if (!n.trim() && !d.trim()) {
+    if (state.f === 'builtin') box.innerHTML = '<div class="note">Built-in naming selected — streams show their original "CSB <quality>" names. Pick a preset to format them.</div>';
+    else box.innerHTML = '<div class="note">Nothing to preview — pick a preset or write a template.</div>';
+    return;
+  }
+  box.innerHTML = '<div class="note"><span class="spin"></span> rendering…</div>';
+  try {
+    const r = await fetch('/api/formatter/preview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: n, description: d }) });
+    const d2 = await r.json();
+    if (!d2.ok) { box.innerHTML = '<div class="diag bad">' + esc(d2.error || 'preview failed') + '</div>'; }
+    else box.innerHTML = d2.samples.map(s =>
+      '<div class="pvcard"><span class="tag">' + esc(s.label) + '</span><div class="nm">' + esc(s.name) + '</div><div class="ds">' + esc(s.description) + '</div></div>').join('');
+    const fmtDiag = list => (list || []).map(x => '⚠ ' + (x.message || JSON.stringify(x))).join('\n');
+    document.getElementById('diag-n').textContent = d2.diagnostics ? fmtDiag(d2.diagnostics.name) : '';
+    document.getElementById('diag-d').textContent = d2.diagnostics ? fmtDiag(d2.diagnostics.description) : '';
+  } catch(e) { box.innerHTML = '<div class="diag bad">preview failed: ' + esc(e.message) + '</div>'; }
+}
+document.getElementById('fmt-n').addEventListener('input', onEditFmt);
+document.getElementById('fmt-d').addEventListener('input', onEditFmt);
+document.getElementById('pv-refresh').onclick = refreshPreview;
+document.getElementById('bExport').onclick = () => {
+  navigator.clipboard.writeText(JSON.stringify({ name: document.getElementById('fmt-n').value, description: document.getElementById('fmt-d').value }, null, 2));
+  document.getElementById('bExport').textContent = 'Copied!';
+  setTimeout(() => document.getElementById('bExport').textContent = 'Copy as JSON', 1500);
+};
+document.getElementById('bImport').onclick = () => { const on = document.getElementById('jsonBox').style.display === 'none'; document.getElementById('jsonBox').style.display = on ? 'block' : 'none'; };
+document.getElementById('bJsonApply').onclick = () => {
+  try {
+    const j = JSON.parse(document.getElementById('json').value);
+    const n = typeof j.name === 'string' ? j.name : ''; const d = typeof j.description === 'string' ? j.description : '';
+    if (!n.trim() && !d.trim()) throw new Error('no "name" or "description" template in that JSON');
+    document.getElementById('fmt-n').value = n; document.getElementById('fmt-d').value = d;
+    state.f = 'custom'; state.n = n; state.d = d;
+    document.getElementById('jsonErr').textContent = '';
+    save(); markFmtChips(); gen(); schedulePreview();
+  } catch(e) { document.getElementById('jsonErr').textContent = 'Could not import: ' + e.message; }
+};
 function renderStatus() {
   const all = allPlugins();
   document.getElementById('hs-total').textContent = all.length;
@@ -493,7 +637,7 @@ function renderRepos() {
   });
   document.getElementById('repoCount').textContent = (DATA.repos||[]).length + ' repos';
 }
-function renderAll() { renderGrid(); renderFiltersPage(); renderFormatter(); renderStatus(); renderRepos(); gen(); }
+function renderAll() { renderGrid(); renderFiltersPage(); renderStatus(); renderRepos(); gen(); }
 
 // ---------- wiring ----------
 document.getElementById('filter').oninput = renderGrid;
@@ -526,9 +670,6 @@ document.getElementById('opt-c').onchange = e => { state.c = e.target.checked; s
 document.getElementById('opt-m').onchange = e => { state.m = e.target.checked; save(); gen(); };
 document.getElementById('opt-d').onchange = e => { state.d = parseInt(e.target.value); save(); gen(); };
 document.getElementById('order-reset').onclick = () => { state.order = []; save(); renderFiltersPage(); gen(); };
-document.getElementById('fmt').onchange = e => { state.fmt = e.target.value; save(); renderFormatter(); gen(); };
-document.getElementById('fmt-name').oninput = e => { state.fmtName = e.target.value; save(); renderFormatter(); gen(); };
-document.getElementById('fmt-title').oninput = e => { state.fmtTitle = e.target.value; save(); renderFormatter(); gen(); };
 document.getElementById('resync').onclick = () => {
   const b = document.getElementById('resync'); b.disabled = true; b.innerHTML = '<span class="spin"></span> syncing…';
   fetch('/api/resync').then(() => poll()).catch(() => { b.disabled = false; b.textContent = '🔄 Resync repos'; });
@@ -565,6 +706,7 @@ async function boot() {
   } catch(e) {
     document.getElementById('syncLine').textContent = '⚠ failed to load repo data';
   }
+  loadFormatter();
 }
 function poll() {
   fetch('/api/repos').then(r => r.json()).then(d => {

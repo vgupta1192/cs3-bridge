@@ -46,4 +46,14 @@ object Store {
             db.prepareStatement("DELETE FROM kv WHERE ts < ?").use { it.setLong(1, cutoff); it.executeUpdate() }
         }
     }
+
+
+    fun deletePrefix(prefix: String) {
+        synchronized(db) {
+            db.prepareStatement("DELETE FROM kv WHERE k LIKE ?").use { ps ->
+                ps.setString(1, "$prefix%")
+                ps.executeUpdate()
+            }
+        }
+    }
 }

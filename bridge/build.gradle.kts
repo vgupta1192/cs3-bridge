@@ -32,6 +32,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     implementation("org.xerial:sqlite-jdbc:3.46.1.0")
     implementation("me.xdrop:fuzzywuzzy:1.4.0")
+    implementation("org.graalvm.polyglot:polyglot:24.2.1")
+    implementation("org.graalvm.polyglot:js-community:24.2.1")
     implementation(libs.slf4j.api)
     implementation("org.slf4j:slf4j-simple:2.0.13")
 }

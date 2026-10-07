@@ -24,6 +24,41 @@ import kotlinx.coroutines.withTimeoutOrNull
 import me.xdrop.fuzzywuzzy.FuzzySearch
 import java.util.Base64
 
+/**
+ * Formatter selection from the install URL (`fmt` key): a preset id, a custom
+ * template pair, or built-in naming. Legacy string configs still decode —
+ * old {provider}/{quality}/{link} tokens are translated to AIOStreams fields,
+ * so pre-formatter install URLs keep working unchanged.
+ */
+data class FmtCfg(val f: String = "builtin", val n: String? = null, val d: String? = null) {
+    companion object {
+        fun fromRaw(raw: Any?): FmtCfg = when (raw) {
+            is Map<*, *> -> FmtCfg(
+                (raw["f"] as? String) ?: "builtin",
+                raw["n"] as? String,
+                raw["d"] as? String,
+            )
+            is String -> fromLegacy(raw)
+            else -> FmtCfg()
+        }
+
+        private fun fromLegacy(s: String): FmtCfg = when {
+            s == "modern" -> FmtCfg("csb-modern")
+            s == "minimal" -> FmtCfg("csb-minimal")
+            s.startsWith("custom:") -> {
+                val parts = s.removePrefix("custom:").split("|", limit = 2)
+                FmtCfg("custom", legacyTpl(parts.getOrElse(0) { "" }), legacyTpl(parts.getOrElse(1) { "" }))
+            }
+            else -> FmtCfg() // "original" / unknown = built-in naming
+        }
+
+        private fun legacyTpl(t: String): String = t
+            .replace("{provider}", "{stream.provider}")
+            .replace("{quality}", "{stream.resolution}")
+            .replace("{link}", "{stream.filename}")
+    }
+}
+
 class BridgeConfig(
     val providers: Set<String>,
     val catalogs: Boolean,
@@ -32,7 +67,7 @@ class BridgeConfig(
     val qualities: Set<Int> = setOf(2160, 1080, 720, 480, 360),
     val maxPerTier: Int = 0,
     val blockCam: Boolean = false,
-    val fmt: String = "original",
+    val fmt: FmtCfg = FmtCfg(),
     val order: List<String> = emptyList(),
 ) {
     companion object {
@@ -54,7 +89,7 @@ class BridgeConfig(
                     qual,
                     (q?.get("tier") as? Number)?.toInt() ?: 0,
                     (q?.get("cam") as? Number)?.toInt() == 1,
-                    root["fmt"]?.toString() ?: "original",
+                    FmtCfg.fromRaw(root["fmt"]),
                     (root["order"] as? List<*>)?.map { it.toString() } ?: emptyList(),
                 )
             } catch (e: Exception) {
@@ -130,19 +165,10 @@ object Streams {
         else -> 0
     }
 
-    /** Apply the formatter preset; returns (name line, title line). */
-    private fun format(cfg: BridgeConfig, provider: String, link: ExtractorLink, q: String): Pair<String, String> = when {
-        cfg.fmt == "modern" -> Pair(if (q.isBlank()) provider else "$provider\n$q", link.name)
-        cfg.fmt == "minimal" -> Pair(if (q.isBlank()) "CSB" else "CSB $q", link.name)
-        cfg.fmt.startsWith("custom:") -> {
-            val parts = cfg.fmt.removePrefix("custom:").split("|", limit = 2)
-            fun tpl(t: String) = t.replace("{provider}", provider).replace("{quality}", q).replace("{link}", link.name)
-            Pair(tpl(parts.getOrElse(0) { "{provider} {quality}" }), tpl(parts.getOrElse(1) { "{link}" }))
-        }
-        else -> Pair(if (q.isBlank()) "CSB" else "CSB $q", "$provider • ${link.name}")
-    }
+    /** Per-request formatter context, resolved while providers scrape. */
+    data class FmtCtx(val kind: String, val season: Int?, val episode: Int?, val title: String?, val year: Int?)
 
-
+    /** Built-in naming (no formatter configured or formatter failed). */
     fun toStremioStream(link: ExtractorLink, providerName: String, cfg: BridgeConfig): Map<String, Any?>? {
         if (link.url.isBlank()) return null
         if (link.type == ExtractorLinkType.TORRENT || link.type == ExtractorLinkType.MAGNET) {
@@ -156,11 +182,54 @@ object Streams {
         }
         val headers = runCatching { link.getAllHeaders().filter { it.value.isNotBlank() } }.getOrDefault(emptyMap())
         val q = qualityLabel(link.quality)
-        val (firstLine, titleLine) = format(cfg, providerName, link, q)
+        val firstLine = if (q.isBlank()) "CSB" else "CSB $q"
         val stream = linkedMapOf<String, Any?>(
             "name" to firstLine,
-            "title" to titleLine,
+            "title" to "$providerName • ${link.name}",
             "description" to "$providerName • ${link.name}",
+            "url" to link.url,
+        )
+        val hints = linkedMapOf<String, Any?>()
+        if (headers.isNotEmpty()) hints["proxyHeaders"] = mapOf("request" to headers)
+        if (link.type == ExtractorLinkType.DASH) hints["notWebReady"] = true
+        if (hints.isNotEmpty()) stream["behaviorHints"] = hints
+        return stream
+    }
+
+    /** AIOStreams-formatted stream map; null = fall back to the built-in naming. */
+    private fun formattedStream(
+        link: ExtractorLink,
+        provider: String,
+        templates: Formatter.Templates,
+        ctx: FmtCtx?,
+    ): Map<String, Any?>? {
+        if (link.url.isBlank()) return null
+        if (link.type == ExtractorLinkType.TORRENT || link.type == ExtractorLinkType.MAGNET) return null
+        val metaJson = mapper.writeValueAsString(
+            linkedMapOf<String, Any?>(
+                "provider" to provider,
+                "linkName" to link.name,
+                "source" to link.source,
+                "quality" to link.quality,
+                "url" to link.url,
+                "kind" to link.type.name,
+            )
+        )
+        val ctxJson = mapper.writeValueAsString(
+            linkedMapOf<String, Any?>(
+                "mediaType" to (ctx?.kind ?: "movie"),
+                "title" to ctx?.title,
+                "year" to ctx?.year,
+                "seasonNum" to ctx?.season,
+                "episodeNum" to ctx?.episode,
+            )
+        )
+        val out = runCatching { Formatter.render(templates, metaJson, ctxJson) }.getOrNull() ?: return null
+        val headers = runCatching { link.getAllHeaders().filter { it.value.isNotBlank() } }.getOrDefault(emptyMap())
+        val stream = linkedMapOf<String, Any?>(
+            "name" to out.name,
+            "title" to out.description,
+            "description" to out.description,
             "url" to link.url,
         )
         val hints = linkedMapOf<String, Any?>()
@@ -254,9 +323,10 @@ object Streams {
         val deadline = cfg.deadlineMs ?: Cfg.deadlineMs
         val channel = Channel<Pair<String, List<ExtractorLink>>>(Channel.UNLIMITED)
         val collected = ArrayList<Pair<String, List<ExtractorLink>>>()
+        val ctxRef = java.util.concurrent.atomic.AtomicReference<FmtCtx?>(null)
 
         val parent = scrapeScope.launch {
-            fetchAll(cfg, kind, id, channel)
+            fetchAll(cfg, kind, id, channel, ctxRef)
             channel.close()
         }
 
@@ -270,7 +340,7 @@ object Streams {
             }
         }
 
-        val result = buildResult(cfg, collected)
+        val result = buildResult(cfg, collected, ctxRef.get())
         AppLogger.i("Streams: $kind/$id -> ${result.size} streams in ${System.currentTimeMillis() - t0} ms (scrape complete=${parent.isCompleted})")
 
         if (cacheKey != null) {
@@ -291,7 +361,7 @@ object Streams {
                         val got = r.getOrNull() ?: break
                         synchronized(collected) { collected.add(got) }
                     }
-                    val full = buildResult(cfg, collected)
+                    val full = buildResult(cfg, collected, ctxRef.get())
                     if (full.isNotEmpty() || respond) {
                         Store.put(cacheKey, mapper.writeValueAsString(mapOf("streams" to full, "incomplete" to false)))
                         AppLogger.i("Streams: $kind/$id late merge -> ${full.size} streams (cache updated)")
@@ -302,8 +372,10 @@ object Streams {
         return result
     }
 
-    private fun buildResult(cfg: BridgeConfig, collected: List<Pair<String, List<ExtractorLink>>>): List<Map<String, Any?>> {
+    private fun buildResult(cfg: BridgeConfig, collected: List<Pair<String, List<ExtractorLink>>>, ctx: FmtCtx?): List<Map<String, Any?>> {
         data class Row(val stream: Map<String, Any?>, val label: String, val link: ExtractorLink)
+        // one templates lookup per serve; null = built-in naming everywhere
+        val templates = runCatching { Formatter.templates(cfg.fmt.f, cfg.fmt.n, cfg.fmt.d) }.getOrNull()
         val rank = cfg.order.withIndex().associate { it.value.lowercase() to it.index }
         var rows = ArrayList<Row>()
         val seen = HashSet<String>()
@@ -312,7 +384,10 @@ object Streams {
                 if (cfg.blockCam && isCam(link)) continue
                 val tier = tierOf(link)
                 if (tier != 0 && tier !in cfg.qualities) continue
-                val st = toStremioStream(link, label, cfg) ?: continue
+                val st = if (templates != null)
+                    formattedStream(link, label, templates, ctx) ?: toStremioStream(link, label, cfg) ?: continue
+                else
+                    toStremioStream(link, label, cfg) ?: continue
                 if (seen.add(link.url)) rows.add(Row(st, label, link))
             }
         }
@@ -327,7 +402,13 @@ object Streams {
         return rows.map { it.stream }
     }
 
-    private suspend fun fetchAll(cfg: BridgeConfig, kind: String, id: String, channel: Channel<Pair<String, List<ExtractorLink>>>) = kotlinx.coroutines.coroutineScope {
+    private suspend fun fetchAll(
+        cfg: BridgeConfig,
+        kind: String,
+        id: String,
+        channel: Channel<Pair<String, List<ExtractorLink>>>,
+        ctxRef: java.util.concurrent.atomic.AtomicReference<FmtCtx?>,
+    ) = kotlinx.coroutines.coroutineScope {
         val sem = Semaphore(Cfg.maxConcurrent)
         val attempted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val succeeded = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
@@ -360,6 +441,7 @@ object Streams {
                 val url = runCatching { unb64(parts[2]) }.getOrNull()
                 val requestedS = parts.getOrNull(3)?.toIntOrNull()
                 val requestedE = parts.getOrNull(4)?.toIntOrNull()
+                ctxRef.set(FmtCtx(kind, requestedS, requestedE, null, null))
                 if (url != null) {
                     for ((info, provs) in Repos.enabledProviders(cfg.providers)) {
                         if (info.internalName != provName) continue
@@ -380,6 +462,7 @@ object Streams {
             if (titleInfo == null) {
                 AppLogger.i("Streams: could not resolve $kind/$imdb")
             } else {
+                ctxRef.set(FmtCtx(kind, requestedS, requestedE, titleInfo.name, titleInfo.year))
                 val want: Set<TvType> = if (kind == "movie")
                     setOf(TvType.Movie, TvType.AnimeMovie)
                 else
