@@ -143,7 +143,8 @@ object HttpApi {
         if (cfg.catalogs) {
             for ((info, provs) in enabled) {
                 for (prov in provs) {
-                    val rows = prov.mainPage.filter { it.name.isNotBlank() && it.data.isNotBlank() }
+                    val rows = runCatching { prov.mainPage.filter { it.name.isNotBlank() && it.data.isNotBlank() } }
+                        .getOrDefault(emptyList())
                     if (rows.isEmpty()) continue
                     catalogs.add(
                         linkedMapOf(

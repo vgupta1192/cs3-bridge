@@ -1,5 +1,6 @@
   csbridge:
     build: ./cs3-bridge
+    image: stremio-stack/csbridge:local
     container_name: csbridge
     restart: unless-stopped
     mem_limit: 2g
