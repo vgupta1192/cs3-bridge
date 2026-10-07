@@ -1,0 +1,4 @@
+csbridge.kissmissi.duckdns.org {
+    import addon
+    reverse_proxy csbridge:7095
+}

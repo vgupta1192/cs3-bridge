@@ -1,7 +1,7 @@
 FROM eclipse-temurin:21-jre-noble
+RUN apt-get update && apt-get install -y --no-install-recommends wget && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY dist/lib /app/lib
-COPY logo.svg /app/logo.svg
 ENV CSBRIDGE_PORT=7095 CSBRIDGE_DATA_DIR=/app/data
 VOLUME /app/data
 EXPOSE 7095
