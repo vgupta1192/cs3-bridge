@@ -224,8 +224,31 @@ object Streams {
     }
 
 
+    private val rescraping = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    /**
+     * Background re-scrape for a cached entry that was written before its scrape
+     * finished ("incomplete"). Deduped per cache key; overwrites the cache with
+     * the full merged list when done.
+     */
+    fun rescrapeAsync(cfg: BridgeConfig, kind: String, id: String, cacheKey: String) {
+        if (rescraping.putIfAbsent(cacheKey, true) != null) return
+        scrapeScope.launch {
+            try {
+                streamsForInternal(cfg, kind, id, cacheKey, respond = false)
+            } catch (t: Throwable) {
+                AppLogger.i("Streams: rescrape failed $kind/$id: ${t.message}")
+            } finally {
+                rescraping.remove(cacheKey)
+            }
+        }
+    }
+
     /** Main entry: streams for a stremio-style request. Returns after the deadline; scraping continues detached. */
-    fun streamsFor(cfg: BridgeConfig, kind: String, id: String, cacheKey: String? = null): List<Map<String, Any?>> {
+    fun streamsFor(cfg: BridgeConfig, kind: String, id: String, cacheKey: String? = null): List<Map<String, Any?>> =
+        streamsForInternal(cfg, kind, id, cacheKey, respond = true)
+
+    private fun streamsForInternal(cfg: BridgeConfig, kind: String, id: String, cacheKey: String?, respond: Boolean): List<Map<String, Any?>> {
         val t0 = System.currentTimeMillis()
         val deadline = cfg.deadlineMs ?: Cfg.deadlineMs
         val channel = Channel<Pair<String, List<ExtractorLink>>>(Channel.UNLIMITED)
@@ -246,7 +269,14 @@ object Streams {
         }
 
         val result = buildResult(cfg, collected)
-        AppLogger.i("Streams: $kind/$id -> ${result.size} streams in ${System.currentTimeMillis() - t0} ms")
+        AppLogger.i("Streams: $kind/$id -> ${result.size} streams in ${System.currentTimeMillis() - t0} ms (scrape complete=${parent.isCompleted})")
+
+        if (cacheKey != null) {
+            // cache what we have now, marking whether stragglers are still running
+            runCatching {
+                Store.put(cacheKey, mapper.writeValueAsString(mapOf("streams" to result, "incomplete" to !parent.isCompleted)))
+            }
+        }
 
         // slow providers keep scraping in the background; when they finish, merge
         // their late results into the cache so the next tap shows the full list
@@ -259,8 +289,8 @@ object Streams {
                         synchronized(collected) { collected.add(got) }
                     }
                     val full = buildResult(cfg, collected)
-                    if (full.isNotEmpty()) {
-                        Store.put(cacheKey, mapper.writeValueAsString(mapOf("streams" to full)))
+                    if (full.isNotEmpty() || respond) {
+                        Store.put(cacheKey, mapper.writeValueAsString(mapOf("streams" to full, "incomplete" to false)))
                         AppLogger.i("Streams: $kind/$id late merge -> ${full.size} streams (cache updated)")
                     }
                 }

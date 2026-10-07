@@ -209,16 +209,18 @@ object HttpApi {
         val cfg = BridgeConfig.decode(segs[0])
         val kind = segs[2] // movie | series | other
         val id = URLDecoder.decode(segs.drop(3).joinToString("/").removeSuffix(".json"), "UTF-8")
-        val cacheKey = "streams:${segs[0]}:$kind:$id"
+        val cacheKey = "streams2:${segs[0]}:$kind:$id"
         val cached = Store.get(cacheKey, 6L * 3600 * 1000)
         if (cached != null) {
-            sendJson(ex, 200, mapper.readValue<Map<String, Any?>>(cached))
+            val entry = runCatching { mapper.readValue<Map<String, Any?>>(cached) }.getOrNull() ?: mapOf("streams" to emptyList<Any?>())
+            if (entry["incomplete"] == true) {
+                Streams.rescrapeAsync(cfg, kind, id, cacheKey)
+            }
+            sendJson(ex, 200, mapOf("streams" to (entry["streams"] ?: emptyList<Any?>())))
             return
         }
         val streams = Streams.streamsFor(cfg, kind, id, cacheKey)
-        val body = linkedMapOf<String, Any?>("streams" to streams)
-        if (streams.isNotEmpty()) Store.put(cacheKey, mapper.writeValueAsString(body))
-        sendJson(ex, 200, body)
+        sendJson(ex, 200, mapOf("streams" to streams))
     }
 
 
