@@ -1,0 +1,272 @@
+package com.kissmissi.csbridge
+
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
+import com.lagradost.cloudstream3.LoadResponse
+import com.lagradost.cloudstream3.MainAPI
+import com.lagradost.cloudstream3.MovieLoadResponse
+import com.lagradost.cloudstream3.MovieSearchResponse
+import com.lagradost.cloudstream3.TvSeriesLoadResponse
+import com.lagradost.cloudstream3.TvSeriesSearchResponse
+import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.common.logging.AppLogger
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
+import me.xdrop.fuzzywuzzy.FuzzySearch
+import java.util.Base64
+
+class BridgeConfig(val providers: Set<String>, val catalogs: Boolean, val magnets: Boolean) {
+    companion object {
+        fun decode(s: String): BridgeConfig {
+            return try {
+                val fixed = s.replace('-', '+').replace('_', '/') + "=".repeat((4 - s.length % 4) % 4)
+                val json = String(Base64.getDecoder().decode(fixed))
+                val root = jacksonObjectMapper().readValue<Map<String, Any>>(json)
+                val p = (root["p"] as? Map<*, *>)?.filterValues { (it as? Number)?.toInt() != 0 }
+                    ?.keys?.map { it.toString() }?.toSet() ?: emptySet()
+                BridgeConfig(p, (root["c"] as? Number)?.toInt() == 1, (root["m"] as? Number)?.toInt() == 1)
+            } catch (e: Exception) {
+                BridgeConfig(
+                    Repos.plugins.values.filter { it.loaded }.map { it.internalName }.toSet(), true, false
+                )
+            }
+        }
+    }
+}
+
+object Streams {
+    private val mapper = jacksonObjectMapper()
+    private const val STREAM_TTL = 6L * 3600 * 1000
+
+
+    fun b64(s: String): String = Base64.getUrlEncoder().withoutPadding().encodeToString(s.toByteArray())
+    fun unb64(s: String): String {
+        val padded = s + "=".repeat((4 - s.length % 4) % 4)
+        return String(Base64.getUrlDecoder().decode(padded))
+    }
+
+
+    fun norm(s: String): String = s.lowercase()
+        .replace(Regex("""\[.*?\]|\(.*?\)"""), " ")
+        .replace(Regex("[^a-z0-9]+"), " ").trim()
+
+    private fun yearOf(r: com.lagradost.cloudstream3.SearchResponse): Int? = when (r) {
+        is MovieSearchResponse -> r.year
+        is TvSeriesSearchResponse -> r.year
+        else -> null
+    }
+
+
+    private fun matches(r: com.lagradost.cloudstream3.SearchResponse, title: String, year: Int?): Boolean {
+        val a = norm(r.name); val b = norm(title)
+        if (a.isEmpty() || b.isEmpty()) return false
+        val score = FuzzySearch.weightedRatio(a, b)
+        val contains = a.contains(b) || b.contains(a)
+        if (score < 80 && !contains) return false
+        val ry = yearOf(r)
+        if (ry != null && year != null && Math.abs(ry - year) > 1) return false
+        return true
+    }
+
+
+    private fun qualityLabel(q: Int): String = when {
+        q >= 2160 -> "4K"
+        q >= 1440 -> "1440p"
+        q >= 1080 -> "1080p"
+        q >= 720 -> "720p"
+        q >= 480 -> "480p"
+        q >= 360 -> "360p"
+        q > 0 -> "${q}p"
+        else -> ""
+    }
+
+
+    fun toStremioStream(link: ExtractorLink, providerName: String, magnets: Boolean): Map<String, Any?>? {
+        if (link.url.isBlank()) return null
+        if (link.type == ExtractorLinkType.TORRENT || link.type == ExtractorLinkType.MAGNET) {
+            if (!magnets) return null
+            return linkedMapOf(
+                "name" to "CSB torrent",
+                "title" to "$providerName • torrent",
+                "description" to "$providerName • ${link.url.take(80)}",
+                "externalUrl" to link.url,
+            )
+        }
+        val headers = runCatching { link.getAllHeaders().filter { it.value.isNotBlank() } }.getOrDefault(emptyMap())
+        val q = qualityLabel(link.quality)
+        val firstLine = "CSB" + if (q.isNotBlank()) " $q" else ""
+        val stream = linkedMapOf<String, Any?>(
+            "name" to firstLine,
+            "title" to "$providerName • ${link.name}",
+            "description" to "$providerName • ${link.name}",
+            "url" to link.url,
+        )
+        val hints = linkedMapOf<String, Any?>()
+        if (headers.isNotEmpty()) hints["proxyHeaders"] = mapOf("request" to headers)
+        if (link.type == ExtractorLinkType.DASH) hints["notWebReady"] = true
+        if (hints.isNotEmpty()) stream["behaviorHints"] = hints
+        return stream
+    }
+
+
+    /** Collect links out of a loaded response. */
+    private suspend fun linksFromResponse(
+        provider: MainAPI,
+        resp: LoadResponse?,
+        season: Int?,
+        episode: Int?,
+    ): List<ExtractorLink> {
+        val data: String? = when (resp) {
+            is MovieLoadResponse -> resp.dataUrl
+            is TvSeriesLoadResponse -> {
+                val eps = resp.episodes
+                when {
+                    eps.isEmpty() -> null
+                    season == null && episode == null -> eps.first().data
+                    else -> (eps.firstOrNull { it.season == season && it.episode == episode }?.data
+                        ?: if (season == null) eps.firstOrNull { it.episode == episode }?.data else null)
+                }
+            }
+            else -> null
+        }
+        if (data.isNullOrEmpty()) return emptyList()
+        val out = ArrayList<ExtractorLink>()
+        provider.loadLinks(
+            data = data,
+            isCasting = false,
+            subtitleCallback = { },
+            callback = { link -> synchronized(out) { out.add(link) } }
+        )
+        return out
+    }
+
+
+    private suspend fun scrapeProvider(
+        prov: MainAPI,
+        label: String,
+        titleInfo: TitleInfo?,
+        kind: String,
+        season: Int?,
+        episode: Int?,
+        matchUrl: String? = null,
+    ): List<ExtractorLink> = withTimeout(Cfg.providerTimeoutMs) {
+        val url = matchUrl ?: run {
+            val results = prov.search(titleInfo?.name ?: "", 1)?.items
+                ?: prov.search(titleInfo?.name ?: "") ?: emptyList()
+            results.firstOrNull { matches(it, titleInfo?.name ?: "", titleInfo?.year) }?.url
+        } ?: return@withTimeout emptyList()
+        val loaded = prov.load(url) ?: return@withTimeout emptyList()
+        linksFromResponse(prov, loaded, season, episode)
+    }
+
+
+    /** Main entry: streams for a stremio-style request. */
+    fun streamsFor(cfg: BridgeConfig, kind: String, id: String): List<Map<String, Any?>> {
+        val t0 = System.currentTimeMillis()
+        val result = runBlocking {
+            withTimeoutOrNull(Cfg.deadlineMs + 8000) { fetchAll(cfg, kind, id) }
+        } ?: emptyList()
+        AppLogger.i("Streams: $kind/$id -> ${result.size} streams in ${System.currentTimeMillis() - t0} ms")
+        return result
+    }
+
+    private suspend fun fetchAll(cfg: BridgeConfig, kind: String, id: String): List<Map<String, Any?>> =
+        coroutineScope {
+            val channel = Channel<Pair<String, List<ExtractorLink>>>(Channel.UNLIMITED)
+            val jobs = ArrayList<Job>()
+            val sem = Semaphore(Cfg.maxConcurrent)
+
+            fun CoroutineScope.launchProvider(label: String, work: suspend () -> List<ExtractorLink>) {
+                jobs += launch(Dispatchers.IO) {
+                    try {
+                        sem.acquire()
+                        try {
+                            val res = work()
+                            if (res.isNotEmpty()) channel.send(label to res)
+                        } finally {
+                            sem.release()
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+
+
+            var requestedS: Int? = null
+            var requestedE: Int? = null
+            if (id.startsWith("csb:")) {
+                val parts = id.split(":")
+                if (parts.size >= 3) {
+                    val provName = parts[1]
+                    val url = runCatching { unb64(parts[2]) }.getOrNull()
+                    requestedS = parts.getOrNull(3)?.toIntOrNull()
+                    requestedE = parts.getOrNull(4)?.toIntOrNull()
+                    if (url != null) {
+                        for ((info, provs) in Repos.enabledProviders(cfg.providers)) {
+                            if (info.internalName != provName) continue
+                            for (prov in provs) {
+                                launchProvider(info.name) {
+                                    val loaded = prov.load(url)
+                                    linksFromResponse(prov, loaded, requestedS, requestedE)
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                val imdb = id.substringBefore(":")
+                requestedS = id.split(":").getOrNull(1)?.toIntOrNull()
+                requestedE = id.split(":").getOrNull(2)?.toIntOrNull()
+                val titleInfo = Resolver.resolve(kind, imdb)
+                if (titleInfo == null) {
+                    AppLogger.i("Streams: could not resolve $kind/$imdb")
+                } else {
+                    val want: Set<TvType> = if (kind == "movie")
+                        setOf(TvType.Movie, TvType.AnimeMovie)
+                    else
+                        setOf(TvType.TvSeries, TvType.Anime, TvType.Cartoon, TvType.OVA, TvType.AsianDrama, TvType.Documentary)
+                    for ((info, provs) in Repos.enabledProviders(cfg.providers)) {
+                        for (prov in provs) {
+                            if (prov.supportedTypes.intersect(want).isEmpty()) continue
+                            launchProvider(info.name) {
+                                scrapeProvider(prov, info.name, titleInfo, kind, requestedS, requestedE)
+                            }
+                        }
+                    }
+                }
+            }
+
+
+            // collect until deadline
+            val collected = ArrayList<Pair<String, List<ExtractorLink>>>()
+            val start = System.currentTimeMillis()
+            while (collected.size < jobs.size) {
+                val remaining = Cfg.deadlineMs - (System.currentTimeMillis() - start)
+                if (remaining <= 0) break
+                val got = withTimeoutOrNull(remaining) { channel.receive() } ?: break
+                collected.add(got)
+            }
+            jobs.forEach { it.cancel() }
+
+
+            val out = ArrayList<Map<String, Any?>>()
+            val seen = HashSet<String>()
+            for ((label, links) in collected) {
+                for (link in links) {
+                    val s = toStremioStream(link, label, cfg.magnets) ?: continue
+                    if (seen.add(link.url)) out.add(s)
+                }
+            }
+            out
+        }
+}

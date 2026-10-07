@@ -1,0 +1,11 @@
+data/
+dist/
+.gradle-home/
+bridge/build/
+common/build/
+android-stubs/build/
+plugin-runtime/build/
+library/build/
+android-reference/library/build/
+.gradle/
+*.log

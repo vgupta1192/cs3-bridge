@@ -1,0 +1,34 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        mavenLocal()
+        maven("https://jitpack.io")
+    }
+}
+
+rootProject.name = "cs3-bridge"
+
+include(":library")
+project(":library").projectDir = file("android-reference/library")
+
+include(":common")
+project(":common").projectDir = file("common")
+
+include(":android-stubs")
+project(":android-stubs").projectDir = file("android-stubs")
+
+include(":plugin-runtime")
+project(":plugin-runtime").projectDir = file("plugin-runtime")
+
+include(":bridge")
+project(":bridge").projectDir = file("bridge")
