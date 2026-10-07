@@ -16,9 +16,10 @@ object Cfg {
         val env = System.getenv("CSBRIDGE_REPOS")
         if (!env.isNullOrBlank()) {
             runCatching {
-                com.fasterxml.jackson.module.kotlin.jacksonObjectMapper().readValue(env,
-                    com.fasterxml.jackson.module.kotlin.typeRef<List<Map<String, String>>>())
-                    .map { Repo(it["name"] ?: it["url"] ?: "repo", it["url"] ?: "") }
+                val arr = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper().readTree(env)
+                (0 until arr.size()).map { i ->
+                    Repo(arr.get(i).path("name").asText("repo"), arr.get(i).path("url").asText())
+                }.filter { it.pluginsUrl.isNotBlank() }
             }.getOrDefault(DEFAULT_REPOS)
         } else DEFAULT_REPOS
     }

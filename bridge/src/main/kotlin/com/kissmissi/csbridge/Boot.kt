@@ -1,3 +1,5 @@
+@file:OptIn(com.lagradost.cloudstream3.Prerelease::class, com.lagradost.cloudstream3.UnsafeSSL::class)
+
 package com.kissmissi.csbridge
 
 import com.lagradost.cloudstream3.USER_AGENT
@@ -7,6 +9,7 @@ import com.lagradost.cloudstream3.network.CloudflareKiller
 import com.lagradost.common.logging.AppLogger
 import com.lagradost.nicehttp.ignoreAllSSLErrors
 import okhttp3.OkHttpClient
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 object Boot {

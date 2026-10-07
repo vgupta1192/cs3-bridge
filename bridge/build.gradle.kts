@@ -21,6 +21,7 @@ dependencies {
     implementation(project(":common"))
 
     implementation("org.bouncycastle:bcprov-jdk18on:1.77")
+    implementation(libs.nicehttp)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.13.1")

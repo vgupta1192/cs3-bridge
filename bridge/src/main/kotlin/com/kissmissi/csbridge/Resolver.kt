@@ -1,3 +1,5 @@
+@file:OptIn(com.lagradost.cloudstream3.Prerelease::class)
+
 package com.kissmissi.csbridge
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper

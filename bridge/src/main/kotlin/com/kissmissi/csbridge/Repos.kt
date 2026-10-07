@@ -1,3 +1,5 @@
+@file:OptIn(com.lagradost.cloudstream3.Prerelease::class)
+
 package com.kissmissi.csbridge
 
 import com.fasterxml.jackson.databind.DeserializationFeature
@@ -8,6 +10,7 @@ import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.runtime.loader.ExtensionLoader
 import com.lagradost.common.logging.AppLogger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -149,9 +152,9 @@ object Repos {
 
     fun startBackgroundSync() {
         Thread {
-            try { sync() } catch (t: Throwable) { AppLogger.e("startup sync failed", t) }
+            try { runBlocking { sync() } } catch (t: Throwable) { AppLogger.e("startup sync failed", t) }
             while (true) {
-                try { Thread.sleep(6L * 3600 * 1000); sync() } catch (t: Throwable) { AppLogger.e("periodic sync failed", t) }
+                try { Thread.sleep(6L * 3600 * 1000); runBlocking { sync() } } catch (t: Throwable) { AppLogger.e("periodic sync failed", t) }
             }
         }.apply { isDaemon = true; name = "repo-sync" }.start()
     }
