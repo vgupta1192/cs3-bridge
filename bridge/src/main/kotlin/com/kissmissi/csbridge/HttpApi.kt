@@ -215,7 +215,7 @@ object HttpApi {
             sendJson(ex, 200, mapper.readValue<Map<String, Any?>>(cached))
             return
         }
-        val streams = Streams.streamsFor(cfg, kind, id)
+        val streams = Streams.streamsFor(cfg, kind, id, cacheKey)
         val body = linkedMapOf<String, Any?>("streams" to streams)
         if (streams.isNotEmpty()) Store.put(cacheKey, mapper.writeValueAsString(body))
         sendJson(ex, 200, body)

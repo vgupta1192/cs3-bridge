@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withTimeout
@@ -198,7 +199,7 @@ object Streams {
                 subtitleCallback = { },
                 callback = { link -> synchronized(out) { out.add(link) } }
             )
-        }
+        }.onFailure { if (it is CancellationException) throw it }
         return out
     }
 
@@ -213,34 +214,58 @@ object Streams {
         val url = matchUrl ?: run {
             val results = runCatching {
                 prov.search(titleInfo?.name ?: "", 1)?.items ?: prov.search(titleInfo?.name ?: "") ?: emptyList()
-            }.getOrDefault(emptyList())
+            }.onFailure { if (it is CancellationException) throw it }.getOrDefault(emptyList())
             results.firstOrNull { matches(it, titleInfo?.name ?: "", titleInfo?.year) }?.url
         } ?: return@withTimeout emptyList()
-        val loaded = runCatching { prov.load(url) }.getOrNull() ?: return@withTimeout emptyList()
-        runCatching { linksFromResponse(prov, loaded, season, episode) }.getOrDefault(emptyList())
+        val loaded = runCatching { prov.load(url) }.onFailure { if (it is CancellationException) throw it }.getOrNull()
+            ?: return@withTimeout emptyList()
+        runCatching { linksFromResponse(prov, loaded, season, episode) }
+            .onFailure { if (it is CancellationException) throw it }.getOrDefault(emptyList())
     }
 
 
     /** Main entry: streams for a stremio-style request. Returns after the deadline; scraping continues detached. */
-    fun streamsFor(cfg: BridgeConfig, kind: String, id: String): List<Map<String, Any?>> {
+    fun streamsFor(cfg: BridgeConfig, kind: String, id: String, cacheKey: String? = null): List<Map<String, Any?>> {
         val t0 = System.currentTimeMillis()
         val deadline = cfg.deadlineMs ?: Cfg.deadlineMs
         val channel = Channel<Pair<String, List<ExtractorLink>>>(Channel.UNLIMITED)
         val collected = ArrayList<Pair<String, List<ExtractorLink>>>()
 
-        scrapeScope.launch { fetchAll(cfg, kind, id, channel) }
+        val parent = scrapeScope.launch {
+            fetchAll(cfg, kind, id, channel)
+            channel.close()
+        }
 
         runBlocking {
             val start = System.currentTimeMillis()
             while (System.currentTimeMillis() - start < deadline) {
                 val remaining = deadline - (System.currentTimeMillis() - start)
                 val got = withTimeoutOrNull(remaining) { channel.receive() } ?: break
-                collected.add(got)
+                synchronized(collected) { collected.add(got) }
             }
         }
 
         val result = buildResult(cfg, collected)
         AppLogger.i("Streams: $kind/$id -> ${result.size} streams in ${System.currentTimeMillis() - t0} ms")
+
+        // slow providers keep scraping in the background; when they finish, merge
+        // their late results into the cache so the next tap shows the full list
+        if (cacheKey != null) {
+            scrapeScope.launch {
+                runCatching {
+                    val start = System.currentTimeMillis()
+                    while (!parent.isCompleted && System.currentTimeMillis() - start < 600_000) {
+                        val got = withTimeoutOrNull(30_000) { channel.receive() } ?: break
+                        synchronized(collected) { collected.add(got) }
+                    }
+                    val full = buildResult(cfg, collected)
+                    if (full.isNotEmpty()) {
+                        Store.put(cacheKey, mapper.writeValueAsString(mapOf("streams" to full)))
+                        AppLogger.i("Streams: $kind/$id late merge -> ${full.size} streams (cache updated)")
+                    }
+                }
+            }
+        }
         return result
     }
 
@@ -300,7 +325,7 @@ object Streams {
                         if (info.internalName != provName) continue
                         for (prov in provs) {
                             launchProvider(info.name) {
-                                val loaded = runCatching { prov.load(url) }.getOrNull()
+                                val loaded = runCatching { prov.load(url) }.onFailure { if (it is CancellationException) throw it }.getOrNull()
                                 linksFromResponse(prov, loaded, requestedS, requestedE)
                             }
                         }
