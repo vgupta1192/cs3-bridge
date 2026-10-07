@@ -1,5 +1,6 @@
 package androidx.preference;
 import android.content.Context;
+import android.content.SharedPreferences;
 @android.annotation.Implemented
 public class PreferenceManager {
     private Context context;
