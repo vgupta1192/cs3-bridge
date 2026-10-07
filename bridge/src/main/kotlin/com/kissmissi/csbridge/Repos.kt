@@ -127,7 +127,9 @@ object Repos {
                             loadedNow++
                         } catch (t: Throwable) {
                             info.loaded = false
-                            info.error = t.message ?: t.toString()
+                            var c: Throwable? = t; var chain = ""
+                            while (c != null) { chain += " <- " + c::class.java.simpleName + ": " + (c.message ?: ""); c = c.cause }
+                            info.error = (t.toString() + chain).take(220)
                             AppLogger.e("RepoSync: failed to load ${raw.internalName}: ${info.error}")
                             failed++
                         }
