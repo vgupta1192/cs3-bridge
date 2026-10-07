@@ -84,15 +84,13 @@ object ExtensionLoader {
                 if (!convertedJar.exists() || convertedJar.length() < 64) {
                     convertedJar.delete()
                     AppLogger.i("Transpiling Dalvik classes.dex to JVM classes.jar...")
-                    // Try to avoid System.exit by calling doMain or just calling main
                     val tmpJar = File(jarFile.parentFile, jarFile.nameWithoutExtension + "-jvm.jar.tmp")
                     tmpJar.delete()
-                    try {
-                        Dex2jarCmd().doMain("-f", dexFile.absolutePath, "-o", tmpJar.absolutePath)
-                    } catch (e: Exception) {
-                        // fallback to main if doMain is not public
-                        Dex2jarCmd.main("-f", dexFile.absolutePath, "-o", tmpJar.absolutePath)
-                    }
+                    // Subprocess, not in-process: dex2jar has exponential-case
+                    // transformers (Ir2JRegAssignTransformer / DexFix) that can
+                    // grind ONE dex for hours, and huge dexes OOM'd the bridge
+                    // JVM. 15-minute cap, then the plugin is marked failed.
+                    convertDexInSubprocess(dexFile, tmpJar, jarFile.name)
                     if (!tmpJar.exists() || tmpJar.length() < 64) {
                         throw IllegalStateException("dex2jar produced no output for ${jarFile.name}")
                     }
@@ -104,6 +102,7 @@ object ExtensionLoader {
                         if (!tmpJar.renameTo(convertedJar)) throw IllegalStateException("could not finalize ${convertedJar.name}")
                     }
                 }
+                runCatching { dexFile.delete() }
 
                 jarToLoad = convertedJar
                 dexFile.delete() // Cleanup
@@ -182,6 +181,28 @@ object ExtensionLoader {
         plugins[jarFile.absolutePath] = pluginInstance
 
         return pluginInstance
+    }
+
+    /** dex2jar in a bounded subprocess; drains output so the pipe can't block. */
+    private fun convertDexInSubprocess(dexFile: File, outJar: File, sourceName: String) {
+        val cp = System.getProperty("java.class.path") ?: throw IllegalStateException("no classpath")
+        val proc = ProcessBuilder(
+            "java", "-Xmx900m", "-cp", cp,
+            "com.googlecode.dex2jar.tools.Dex2jarCmd",
+            "-f", dexFile.absolutePath, "-o", outJar.absolutePath,
+        ).redirectErrorStream(true).start()
+        val drain = Thread {
+            runCatching { proc.inputStream.use { it.readBytes() } }
+        }.apply { isDaemon = true; name = "dex2jar-drain" }
+        drain.start()
+        val finished = proc.waitFor(15, java.util.concurrent.TimeUnit.MINUTES)
+        if (!finished) {
+            proc.destroyForcibly()
+            throw IllegalStateException("dex2jar timed out after 15m on $sourceName")
+        }
+        if (proc.exitValue() != 0) {
+            throw IllegalStateException("dex2jar failed rc=${proc.exitValue()} on $sourceName")
+        }
     }
 
     private fun getTrustedList(): MutableList<String> {
