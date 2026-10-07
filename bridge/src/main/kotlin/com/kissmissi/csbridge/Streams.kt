@@ -401,6 +401,7 @@ object Streams {
             // that yielded nothing exactly once - concurrent scraping is flaky
             val empty = attempted.filter { it !in succeeded }
             if (empty.isNotEmpty()) {
+                com.lagradost.cloudstream3.network.CloudflareKiller.resetFailedHosts()
                 AppLogger.i("Streams: retrying ${empty.size} empty providers")
                 for (key in empty) {
                     retryDefs[key]?.let { (label, work) ->

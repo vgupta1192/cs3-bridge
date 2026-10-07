@@ -23,6 +23,12 @@ class CloudflareKiller : Interceptor {
         // Track hosts where bypass has already failed — don't retry during this session
         private val failedHosts = ConcurrentHashMap.newKeySet<String>()
 
+        /** Concurrent fleet scraping can mark a host failed on a transient race;
+         *  the retry wave clears these so the second attempt gets a fresh solve. */
+        fun resetFailedHosts() {
+            failedHosts.clear()
+        }
+
         fun parseCookieMap(cookie: String): Map<String, String> {
             return cookie.split(";")
                 .mapNotNull { pair ->
