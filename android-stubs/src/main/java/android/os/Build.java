@@ -7,6 +7,10 @@ public class Build {
     public static final String DEVICE = "bridge";
     public static final String BRAND = "cloudstream";
 
+    public static String getSerial() {
+        return "unknown";
+    }
+
     public static class VERSION {
         public static final int SDK_INT = 34;
         public static final String RELEASE = "14";
