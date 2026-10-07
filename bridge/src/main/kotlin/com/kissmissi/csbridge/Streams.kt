@@ -191,12 +191,14 @@ object Streams {
         }
         if (data.isNullOrEmpty()) return emptyList()
         val out = ArrayList<ExtractorLink>()
-        provider.loadLinks(
-            data = data,
-            isCasting = false,
-            subtitleCallback = { },
-            callback = { link -> synchronized(out) { out.add(link) } }
-        )
+        runCatching {
+            provider.loadLinks(
+                data = data,
+                isCasting = false,
+                subtitleCallback = { },
+                callback = { link -> synchronized(out) { out.add(link) } }
+            )
+        }
         return out
     }
 
@@ -211,12 +213,13 @@ object Streams {
         matchUrl: String? = null,
     ): List<ExtractorLink> = withTimeout(Cfg.providerTimeoutMs) {
         val url = matchUrl ?: run {
-            val results = prov.search(titleInfo?.name ?: "", 1)?.items
-                ?: prov.search(titleInfo?.name ?: "") ?: emptyList()
+            val results = runCatching {
+                prov.search(titleInfo?.name ?: "", 1)?.items ?: prov.search(titleInfo?.name ?: "") ?: emptyList()
+            }.getOrDefault(emptyList())
             results.firstOrNull { matches(it, titleInfo?.name ?: "", titleInfo?.year) }?.url
         } ?: return@withTimeout emptyList()
-        val loaded = prov.load(url) ?: return@withTimeout emptyList()
-        linksFromResponse(prov, loaded, season, episode)
+        val loaded = runCatching { prov.load(url) }.getOrNull() ?: return@withTimeout emptyList()
+        runCatching { linksFromResponse(prov, loaded, season, episode) }.getOrDefault(emptyList())
     }
 
 
@@ -247,7 +250,7 @@ object Streams {
                         } finally {
                             sem.release()
                         }
-                    } catch (_: Exception) {
+                    } catch (_: Throwable) {
                     }
                 }
             }
