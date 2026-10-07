@@ -3,8 +3,8 @@
     image: stremio-stack/csbridge:local
     container_name: csbridge
     restart: unless-stopped
-    mem_limit: 2g
-    memswap_limit: 4g   # = 2x mem_limit: swap-first (2026-09-22)
+    mem_limit: 2500m
+    memswap_limit: 5g   # = 2x mem_limit: swap-first (2026-09-22)
     environment:
       - CSBRIDGE_PORT=7095
       - CSBRIDGE_DATA_DIR=/app/data

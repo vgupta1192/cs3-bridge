@@ -35,10 +35,10 @@ body { background:var(--bg); color:var(--text); font-family:'Inter',system-ui,sa
 .nav svg { width:16px; height:16px; flex-shrink:0; }
 .side-foot { margin-top:auto; padding:12px 10px 4px; color:var(--text-dim); font-size:11px; text-align:center; line-height:1.6; }
 .side-foot b { color:var(--text-sub); }
-.main { flex:1; padding:26px 30px 60px; max-width:1000px; }
+.main { flex:1; padding:26px 30px 60px; max-width:1050px; }
 .page { display:none; } .page.sel { display:block; }
 h2 { font-size:19px; font-weight:800; letter-spacing:-.4px; margin-bottom:4px; }
-.psub { color:var(--text-dim); font-size:13px; margin-bottom:18px; }
+.psub { color:var(--text-dim); font-size:13px; margin-bottom:18px; line-height:1.5; }
 .hero { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:20px; display:flex; gap:16px; align-items:center; margin-bottom:14px; }
 .hero .logo { width:56px; height:56px; font-size:22px; }
 .hero h1 { font-size:21px; font-weight:800; letter-spacing:-.4px; }
@@ -47,7 +47,7 @@ h2 { font-size:19px; font-weight:800; letter-spacing:-.4px; margin-bottom:4px; }
 .stat { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px 16px; }
 .stat .v { font-size:21px; font-weight:800; }
 .stat .k { color:var(--text-dim); font-size:11.5px; margin-top:3px; }
-.stat .v.ok { color:var(--green); } .stat .v.acc { color:var(--accent); }
+.stat .v.ok { color:var(--green); } .stat .v.acc { color:var(--accent); } .stat .v.err { color:var(--red); }
 section.card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:18px; margin-bottom:14px; }
 .sec-head { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
 .sec-title { font-size:15px; font-weight:700; }
@@ -57,46 +57,65 @@ section.card { background:var(--surface); border:1px solid var(--border); border
 .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; box-shadow:0 0 18px var(--accent-glow); }
 .btn.primary:hover { filter:brightness(1.1); }
 .btn.danger { color:var(--red); border-color:var(--red); }
-.search { width:100%; background:var(--bg); border:1px solid var(--border); border-radius:10px; color:var(--text); padding:10px 14px; font-size:14px; font-family:inherit; outline:none; margin-bottom:14px; }
+.btn.small { padding:4px 9px; font-size:11.5px; }
+.chipbtn { background:var(--bg); color:var(--text-sub); border:1px solid var(--border); border-radius:999px; padding:6px 13px; font-size:12.5px; font-weight:600; cursor:pointer; font-family:inherit; transition:all .15s; }
+.chipbtn:hover { border-color:var(--border-focus); }
+.chipbtn.sel { background:var(--accent); border-color:var(--accent); color:#fff; }
+input, select { background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:8px 11px; font-family:inherit; font-size:13px; outline:none; }
+input:focus, select:focus { border-color:var(--accent); }
+.search { width:100%; border-radius:10px; padding:10px 14px; font-size:14px; margin-bottom:14px; }
 .search:focus { border-color:var(--accent); }
-.plist { display:flex; flex-direction:column; gap:8px; max-height:430px; overflow-y:auto; padding-right:4px; }
-.plist::-webkit-scrollbar { width:8px; } .plist::-webkit-scrollbar-thumb { background:var(--surface-active); border-radius:4px; }
-.prov { display:flex; align-items:center; gap:12px; background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:10px 12px; transition:all .15s; }
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:10px; max-height:560px; overflow-y:auto; padding-right:4px; }
+.grid::-webkit-scrollbar, .plist::-webkit-scrollbar { width:8px; }
+.grid::-webkit-scrollbar-thumb, .plist::-webkit-scrollbar-thumb { background:var(--surface-active); border-radius:4px; }
+.prov { display:flex; align-items:center; gap:11px; background:var(--bg); border:1px solid var(--border); border-radius:11px; padding:10px 12px; transition:all .15s; cursor:default; }
 .prov:hover { background:var(--card-hover); }
-.prov img { width:36px; height:36px; border-radius:8px; object-fit:contain; background:var(--surface-active); flex-shrink:0; }
-.prov .nm { font-weight:600; font-size:13.5px; }
-.prov .ds { color:var(--text-dim); font-size:12px; margin-top:1px; display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
-.prov .chips { display:flex; gap:5px; margin-top:4px; flex-wrap:wrap; }
-.chip { font-size:10.5px; padding:2px 7px; border-radius:999px; background:var(--surface-active); color:var(--text-dim); border:1px solid var(--border); }
+.prov.on { border-color:var(--accent); box-shadow:0 0 10px var(--accent-glow); }
+.prov img { width:34px; height:34px; border-radius:8px; object-fit:contain; background:var(--surface-active); flex-shrink:0; }
+.prov .nm { font-weight:600; font-size:13px; }
+.prov .ds { color:var(--text-dim); font-size:11.5px; margin-top:1px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; line-height:1.4; }
+.prov .chips { display:flex; gap:4px; margin-top:3px; flex-wrap:wrap; }
+.chip { font-size:10px; padding:1px 6px; border-radius:999px; background:var(--surface-active); color:var(--text-dim); border:1px solid var(--border); }
 .chip.lang { color:var(--text-sub); }
-.chip.err { color:var(--red); border-color:var(--red); }
-.chip.ok { color:var(--green); border-color:var(--green); }
+.chip.dead { color:var(--red); border-color:var(--red); }
+.chip.up { color:var(--green); border-color:var(--green); }
 .grow { flex:1; min-width:0; }
-.switch { position:relative; width:40px; height:22px; flex-shrink:0; cursor:pointer; }
+.switch { position:relative; width:38px; height:21px; flex-shrink:0; cursor:pointer; }
 .switch input { opacity:0; width:0; height:0; }
 .sl { position:absolute; inset:0; background:var(--surface-active); border-radius:999px; transition:.2s; border:1px solid var(--border); }
-.sl:before { content:""; position:absolute; width:16px; height:16px; border-radius:50%; background:var(--text-dim); top:2px; left:2px; transition:.2s; }
+.sl:before { content:""; position:absolute; width:15px; height:15px; border-radius:50%; background:var(--text-dim); top:2px; left:2px; transition:.2s; }
 .switch input:checked + .sl { background:var(--accent); border-color:var(--accent); }
-.switch input:checked + .sl:before { transform:translateX(18px); background:#fff; }
+.switch input:checked + .sl:before { transform:translateX(17px); background:#fff; }
+.qchip { display:inline-flex; align-items:center; gap:7px; background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:9px 13px; font-size:13px; font-weight:600; cursor:pointer; user-select:none; }
+.qchip input { accent-color:var(--accent); }
+.qchip.off { opacity:.45; }
 .opt-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 0; border-bottom:1px solid var(--border); }
 .opt-row:last-child { border-bottom:none; }
 .opt-row .nm { font-weight:600; font-size:13.5px; }
 .opt-row .ds { color:var(--text-dim); font-size:12px; margin-top:2px; line-height:1.5; }
-select { background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:7px 10px; font-family:inherit; font-size:13px; outline:none; }
-.gen-url { width:100%; background:var(--bg); border:1px solid var(--border-focus); border-radius:10px; color:var(--text); padding:12px 14px; font-size:12.5px; font-family:ui-monospace,monospace; word-break:break-all; outline:none; }
+.gen-url { width:100%; background:var(--bg); border:1px solid var(--border-focus); border-radius:10px; color:var(--text); padding:12px 14px; font-size:12px; font-family:ui-monospace,monospace; word-break:break-all; outline:none; }
 .actions { display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; }
 .note { color:var(--text-dim); font-size:12.5px; margin-top:12px; line-height:1.6; }
 .note b { color:var(--text-sub); }
+.big { width:100%; padding:14px; font-size:15px; font-weight:700; border-radius:11px; }
 table { width:100%; border-collapse:collapse; font-size:12.5px; }
 th { text-align:left; color:var(--text-dim); font-weight:600; padding:8px 10px; border-bottom:1px solid var(--border); }
 td { padding:9px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
 tr:last-child td { border-bottom:none; }
-.st-ok { color:var(--green); font-weight:600; } .st-err { color:var(--red); font-weight:600; }
+.st-ok { color:var(--green); font-weight:600; } .st-err { color:var(--red); font-weight:600; } .st-unk { color:var(--text-dim); font-weight:600; }
 .errtext { color:var(--text-dim); font-size:11.5px; max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .repo-card { display:flex; align-items:center; gap:14px; background:var(--bg); border:1px solid var(--border); border-radius:12px; padding:14px 16px; margin-bottom:10px; }
-.repo-card .ic { width:40px; height:40px; border-radius:10px; background:var(--surface-active); display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0; }
+.repo-card .ic { width:40px; height:40px; border-radius:10px; background:var(--surface-active); display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0; overflow:hidden; }
+.repo-card .ic img { width:100%; height:100%; object-fit:contain; }
 .repo-card .nm { font-weight:700; font-size:14px; }
 .repo-card .ds { color:var(--text-dim); font-size:12px; margin-top:2px; }
+.pill { background:var(--accent-glow); color:var(--accent); border-radius:999px; padding:3px 10px; font-size:11px; font-weight:700; flex-shrink:0; }
+.order-row { display:flex; align-items:center; gap:8px; background:var(--bg); border:1px solid var(--border); border-radius:9px; padding:7px 11px; margin-bottom:6px; font-size:13px; font-weight:600; }
+.arrow { background:var(--surface-active); border:1px solid var(--border); color:var(--text-sub); border-radius:6px; padding:3px 9px; cursor:pointer; font-family:inherit; }
+.arrow:hover { color:var(--text); border-color:var(--border-focus); }
+.preview { background:var(--bg); border:1px dashed var(--border-focus); border-radius:10px; padding:12px 14px; margin-top:12px; font-size:12.5px; line-height:1.7; }
+.preview .l1 { font-weight:700; color:var(--text); white-space:pre-line; }
+.preview .l2 { color:var(--text-dim); }
 .spin { display:inline-block; width:12px; height:12px; border:2px solid var(--text-dim); border-top-color:var(--accent); border-radius:50%; animation:sp 1s linear infinite; vertical-align:-2px; }
 @keyframes sp { to { transform:rotate(360deg); } }
 @media (max-width:760px) {
@@ -117,13 +136,14 @@ tr:last-child td { border-bottom:none; }
     </div>
     <div class="side-label">Pages</div>
     <div class="nav sel" data-p="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg> Home &amp; sources</div>
-    <div class="nav" data-p="status"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg> Source status</div>
     <div class="nav" data-p="filters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M7 12h10m-7 6h4"/></svg> Stream filters</div>
+    <div class="nav" data-p="formatter"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20h16M6 16 14 4m4 12-6-12"/></svg> Stream formatter</div>
+    <div class="nav" data-p="status"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg> Source status</div>
     <div class="side-label">Repositories</div>
     <div class="nav" data-p="repos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 4v5"/></svg> Installed repositories</div>
     <div class="side-label">Preferences</div>
     <div class="nav" id="themeBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9l2.1 2.1m10 10 2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg> <span id="themeLabel">Theme: Slate</span></div>
-    <div class="side-foot"><b>CloudStream Bridge</b><br><span id="footVer">v1.0</span> • Stremio Addon Gateway</div>
+    <div class="side-foot"><b>CloudStream Bridge</b><br><span id="footVer"></span> • Stremio Addon Gateway</div>
   </div>
 
   <div class="main">
@@ -139,69 +159,86 @@ tr:last-child td { border-bottom:none; }
       <div class="stats">
         <div class="stat"><div class="v acc" id="st-en">–</div><div class="k">sources enabled</div></div>
         <div class="stat"><div class="v" id="st-av">–</div><div class="k">plugins loaded</div></div>
-        <div class="stat"><div class="v" id="st-repos">3</div><div class="k">repositories</div></div>
+        <div class="stat"><div class="v" id="st-repos">–</div><div class="k">repositories</div></div>
         <div class="stat"><div class="v ok" id="st-state">Ready ✓</div><div class="k">config state</div></div>
       </div>
       <section class="card">
-        <div class="sec-head"><div class="sec-title">Your addon URL</div></div>
+        <div class="sec-head"><div class="sec-title">Install your personal addon</div></div>
         <input class="gen-url" id="murl" readonly value="loading…">
         <div class="actions">
-          <button class="btn primary" id="copy">📋 Copy manifest URL</button>
+          <button class="btn primary big" id="copy">📋 Copy Addon URL</button>
           <button class="btn" id="open">Open manifest</button>
         </div>
         <div class="note">
           <b>Nuvio:</b> Settings → Addons → + → paste the URL (or add it remotely via the VPS Updates bot → /nuvio).<br>
-          <b>Stremio:</b> paste the URL in the addon search bar. Every stream request is fanned out to all enabled sources.
+          <b>Stremio:</b> paste the URL in the addon search bar. Every stream request fans out to all enabled sources.
+        </div>
+      </section>
+      <section class="card">
+        <div class="opt-row" style="border-bottom:none">
+          <div><div class="nm">Show catalogs</div><div class="ds">Expose each provider's home rows as browseable catalogs + in-addon search. Turn off for streams-only mode (faster loading).</div></div>
+          <label class="switch"><input type="checkbox" id="opt-c" checked><span class="sl"></span></label>
         </div>
       </section>
       <section class="card">
         <div class="sec-head">
-          <div class="sec-title">Home &amp; sources<small>pick what this addon serves</small></div>
-          <div style="display:flex;gap:8px">
-            <button class="btn" id="all-on">Enable all</button>
-            <button class="btn" id="all-off">Disable all</button>
-          </div>
+          <div class="sec-title">Sources &amp; providers<small>select providers and presets configure sources instantly</small></div>
         </div>
-        <input class="search" id="filter" placeholder="Filter sources…">
-        <div id="repos"></div>
-      </section>
-    </div>
-
-    <!-- SOURCE STATUS -->
-    <div class="page" id="page-status">
-      <h2>Source status</h2>
-      <div class="psub">Live load state of every plugin from the installed repositories. Failed plugins are skipped at stream time.</div>
-      <section class="card">
-        <div class="sec-head">
-          <div class="sec-title">Plugins<small id="syncLine"></small></div>
-          <div style="display:flex;gap:8px">
-            <button class="btn" id="resync">🔄 Resync repos</button>
-          </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <button class="btn" id="all-on">✓ Enable all</button>
+          <button class="btn" id="all-off">✕ Clear all</button>
+          <button class="chipbtn" data-preset="movies">🎬 Movies &amp; Series</button>
+          <button class="chipbtn" data-preset="anime">🌸 Anime</button>
+          <button class="chipbtn" data-preset="live">📺 Live TV</button>
+          <button class="chipbtn" data-preset="core">⭐ Core repos</button>
         </div>
-        <div style="overflow-x:auto">
-        <table>
-          <thead><tr><th>Source</th><th>Repo</th><th>Version</th><th>Status</th><th>Detail</th></tr></thead>
-          <tbody id="statusRows"></tbody>
-        </table>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <select id="f-repo"><option value="">All repositories</option></select>
+          <select id="f-lang"><option value="">All languages</option></select>
+          <label class="qchip" style="padding:7px 12px"><input type="checkbox" id="f-dead" checked> Hide dead</label>
+          <label class="qchip" style="padding:7px 12px"><input type="checkbox" id="f-failed"> Hide load-failed</label>
         </div>
+        <input class="search" id="filter" placeholder="Search providers by name, repo, language…">
+        <div class="grid" id="grid"></div>
       </section>
     </div>
 
     <!-- FILTERS -->
     <div class="page" id="page-filters">
       <h2>Stream filters</h2>
-      <div class="psub">Applies to every config generated from this page.</div>
+      <div class="psub">Choose which video qualities are displayed. Unchecked qualities will be filtered out, streams grouped by quality tier with per-tier caps and your preferred provider order.</div>
       <section class="card">
+        <div class="sec-head"><div class="sec-title">Stream quality filters<small id="qLabel"></small></div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <label class="qchip"><input type="checkbox" id="q-2160" checked> 4K (2160p)</label>
+          <label class="qchip"><input type="checkbox" id="q-1080" checked> 1080p FHD</label>
+          <label class="qchip"><input type="checkbox" id="q-720" checked> 720p HD</label>
+          <label class="qchip"><input type="checkbox" id="q-480" checked> 480p / SD</label>
+          <label class="qchip"><input type="checkbox" id="q-360" checked> 360p</label>
+        </div>
+        <div class="note">Unknown-quality streams are always kept.</div>
+      </section>
+      <section class="card">
+        <div class="sec-head"><div class="sec-title">Filtering &amp; playback</div></div>
         <div class="opt-row">
-          <div><div class="nm">Catalogs</div><div class="ds">Expose each provider's home rows as browseable catalogs (plus in-addon search)</div></div>
-          <label class="switch"><input type="checkbox" id="opt-c" checked><span class="sl"></span></label>
+          <div><div class="nm">Max streams per quality tier</div><div class="ds">After provider ordering, keep at most N streams per tier (4K / 1080p / …). 0 = unlimited.</div></div>
+          <select id="opt-tier">
+            <option value="0" selected>All streams</option>
+            <option value="8">Top 8 per tier</option>
+            <option value="5">Top 5 per tier</option>
+            <option value="3">Top 3 per tier</option>
+          </select>
         </div>
         <div class="opt-row">
-          <div><div class="nm">Torrent / magnet links</div><div class="ds">Include magnet links from torrent providers (needs an external torrent client)</div></div>
+          <div><div class="nm">Block CAM / Screeners</div><div class="ds">Drop links detected as CAM, HDTS, TC or screener releases by name or quality.</div></div>
+          <label class="switch"><input type="checkbox" id="opt-cam"><span class="sl"></span></label>
+        </div>
+        <div class="opt-row">
+          <div><div class="nm">Torrent / magnet links</div><div class="ds">Include magnet links from torrent providers (needs an external torrent client).</div></div>
           <label class="switch"><input type="checkbox" id="opt-m"><span class="sl"></span></label>
         </div>
         <div class="opt-row">
-          <div><div class="nm">Search deadline</div><div class="ds">How long a stream request waits for slow sources before returning what it has</div></div>
+          <div><div class="nm">Search deadline</div><div class="ds">How long a stream request waits for slow sources before returning what it has. Results are cached 6 h.</div></div>
           <select id="opt-d">
             <option value="15000">15 s — fastest</option>
             <option value="25000" selected>25 s — balanced</option>
@@ -210,32 +247,100 @@ tr:last-child td { border-bottom:none; }
         </div>
       </section>
       <section class="card">
-        <div class="note" style="margin:0">Results are cached for 6 h per title, so repeat plays answer instantly. Links are deduplicated across sources and sorted by the provider that found them.</div>
+        <div class="sec-head">
+          <div class="sec-title">Provider order</div>
+          <button class="btn small" id="order-reset">Reset</button>
+        </div>
+        <div class="psub" style="margin-bottom:10px">Inside each quality tier, providers appear in this order. Only enabled providers are listed.</div>
+        <div id="orderList"></div>
+      </section>
+    </div>
+
+    <!-- FORMATTER -->
+    <div class="page" id="page-formatter">
+      <h2>Stream formatter</h2>
+      <div class="psub">Choose how stream names and details look in Stremio — pick a preset or write your own.</div>
+      <section class="card">
+        <div class="sec-head"><div class="sec-title">Preset</div></div>
+        <select id="fmt" style="width:100%">
+          <option value="original">Original names (no formatting)</option>
+          <option value="modern">Preset: ✨ CloudStream Modern</option>
+          <option value="minimal">Preset: ⚡ Minimal (Torrentio-style)</option>
+          <option value="custom">Custom (write your own)</option>
+        </select>
+        <div id="customBox" style="display:none;margin-top:12px">
+          <div class="psub" style="margin-bottom:6px">Name line and title line templates. Tokens: {provider} {quality} {link}</div>
+          <input id="fmt-name" style="width:100%;margin-bottom:8px" value="{provider} {quality}">
+          <input id="fmt-title" style="width:100%" value="{link}">
+        </div>
+        <div class="preview">
+          <div class="l1" id="pv-name"></div>
+          <div class="l2" id="pv-title"></div>
+        </div>
+      </section>
+    </div>
+
+    <!-- STATUS -->
+    <div class="page" id="page-status">
+      <h2>Source status</h2>
+      <div class="psub">Live health of your sources, from this server's own checks.</div>
+      <section class="card">
+        <div class="sec-head">
+          <div class="sec-title">All plugins<small id="syncLine"></small></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn" id="resync">🔄 Resync repos</button>
+            <button class="btn primary" id="healthbtn">▶ Run health check</button>
+          </div>
+        </div>
+        <div class="stats">
+          <div class="stat"><div class="v" id="hs-total">–</div><div class="k">Sources</div></div>
+          <div class="stat"><div class="v ok" id="hs-up">–</div><div class="k">Up</div></div>
+          <div class="stat"><div class="v err" id="hs-down">–</div><div class="k">Down</div></div>
+          <div class="stat"><div class="v" id="hs-unk">–</div><div class="k">Unchecked</div></div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+          <button class="chipbtn sel" data-hf="all">All</button>
+          <button class="chipbtn" data-hf="up">Up</button>
+          <button class="chipbtn" data-hf="down">Down</button>
+          <button class="chipbtn" data-hf="unchecked">Unchecked</button>
+        </div>
+        <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Source</th><th>Repo</th><th>Health</th><th>Detail</th></tr></thead>
+          <tbody id="statusRows"></tbody>
+        </table>
+        </div>
       </section>
     </div>
 
     <!-- REPOS -->
     <div class="page" id="page-repos">
       <h2>Installed repositories</h2>
-      <div class="psub">CloudStream plugin repos this bridge syncs. New plugin versions are picked up automatically every 6 h.</div>
+      <div class="psub">CloudStream plugin repos this bridge syncs. New plugin versions are picked up automatically every 6 h. All media streaming is powered by open-source CloudStream repository maintainers — please check out their original repositories and support them!</div>
       <section class="card">
+        <div class="sec-head"><div class="sec-title">Repositories<small id="repoCount"></small></div></div>
         <div id="repoCards"></div>
-        <div class="note" style="margin:0">Want another CloudStream repo here? Add its raw <b>plugins.json</b> URL and it can be wired into the bridge.</div>
+        <div class="sec-head" style="margin-top:16px"><div class="sec-title">Add a repository</div></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input id="add-name" placeholder="Name (optional)" style="flex:1;min-width:180px">
+          <input id="add-url" placeholder="https://…/plugins.json" style="flex:2;min-width:260px">
+          <button class="btn primary" id="add-btn">＋ Add</button>
+        </div>
+        <div class="note" id="addMsg"></div>
       </section>
     </div>
   </div>
 </div>
 <script>
 let DATA = null;
-let state = { p: {}, c: true, m: false };
+let state = { p: {}, c: true, m: false, d: 25000, q: { on: [2160,1080,720,480,360], tier: 0, cam: 0 }, fmt: 'original', fmtName: '{provider} {quality}', fmtTitle: '{link}', order: [] };
 const B64 = s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const THEMES = ['slate','charcoal','navy','forest'];
-try { const s = localStorage.getItem('csb_state'); if (s) state = Object.assign(state, JSON.parse(s)); } catch(e) {}
+try { const s = localStorage.getItem('csb_state2'); if (s) state = Object.assign(state, JSON.parse(s)); } catch(e) {}
 document.documentElement.dataset.baseTheme = localStorage.getItem('csb_theme') || 'slate';
-document.getElementById('themeLabel').textContent = 'Theme: ' + (document.documentElement.dataset.baseTheme.charAt(0).toUpperCase() + document.documentElement.dataset.baseTheme.slice(1));
+document.getElementById('themeLabel').textContent = 'Theme: ' + document.documentElement.dataset.baseTheme.charAt(0).toUpperCase() + document.documentElement.dataset.baseTheme.slice(1);
 document.getElementById('themeBtn').onclick = () => {
-  const cur = document.documentElement.dataset.baseTheme;
-  const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
+  const next = THEMES[(THEMES.indexOf(document.documentElement.dataset.baseTheme) + 1) % THEMES.length];
   document.documentElement.dataset.baseTheme = next;
   localStorage.setItem('csb_theme', next);
   document.getElementById('themeLabel').textContent = 'Theme: ' + next.charAt(0).toUpperCase() + next.slice(1);
@@ -249,92 +354,193 @@ document.querySelectorAll('.nav[data-p]').forEach(n => n.onclick = () => {
 
 function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function allPlugins(){ return (DATA&&DATA.repos||[]).flatMap(r => r.plugins); }
+function repoOf(p){ return ((DATA&&DATA.repos)||[]).find(r => r.plugins.indexOf(p) >= 0); }
 
-function render() {
-  if (!DATA) return;
-  const root = document.getElementById('repos');
+// ---------- state <-> UI ----------
+function save(){ localStorage.setItem('csb_state2', JSON.stringify(state)); }
+function gen() {
+  const cfg = Object.assign({}, state);
+  delete cfg.fmtName; delete cfg.fmtTitle;
+  if (cfg.fmt === 'custom') { cfg.fmt = 'custom:' + (state.fmtName||'') + '|' + (state.fmtTitle||''); }
+  const url = location.origin + '/' + B64(JSON.stringify(cfg)) + '/manifest.json';
+  document.getElementById('murl').value = url;
+}
+
+// ---------- HOME ----------
+function renderGrid() {
+  const root = document.getElementById('grid');
   const q = document.getElementById('filter').value.toLowerCase();
+  const fRepo = document.getElementById('f-repo').value;
+  const fLang = document.getElementById('f-lang').value;
+  const hideDead = document.getElementById('f-dead').checked;
+  const hideFailed = document.getElementById('f-failed').checked;
   root.innerHTML = '';
-  DATA.repos.forEach(repo => {
-    const sec = document.createElement('div');
-    sec.style.marginBottom = '14px';
-    const head = document.createElement('div');
-    head.className = 'sec-head';
-    const on = repo.plugins.filter(p => state.p[p.internalName]).length;
-    head.innerHTML = '<div class="sec-title">' + esc(repo.name) + '<small>' + on + '/' + repo.plugins.length + ' enabled</small></div>';
-    const btns = document.createElement('div');
-    btns.style.cssText = 'display:flex;gap:8px';
-    const bOn = document.createElement('button'); bOn.className='btn'; bOn.textContent='All';
-    const bOff = document.createElement('button'); bOff.className='btn'; bOff.textContent='None';
-    bOn.onclick = () => { repo.plugins.forEach(p => state.p[p.internalName] = 1); save(); render(); gen(); };
-    bOff.onclick = () => { repo.plugins.forEach(p => delete state.p[p.internalName]); save(); render(); gen(); };
-    btns.append(bOn, bOff); head.append(btns); sec.append(head);
-    const list = document.createElement('div'); list.className = 'plist';
-    repo.plugins.forEach(p => {
-      if (q && !(p.name+' '+p.internalName+' '+(p.description||'')).toLowerCase().includes(q)) return;
-      const row = document.createElement('div'); row.className = 'prov';
-      const chips = (p.tvTypes||[]).slice(0,3).map(t => '<span class="chip">'+esc(t)+'</span>').join('')
-        + (p.language ? '<span class="chip lang">'+esc(p.language)+'</span>' : '')
-        + (p.loaded ? '<span class="chip ok">loaded</span>' : '<span class="chip err">load failed</span>');
-      row.innerHTML =
-        '<img src="' + esc(p.iconUrl||'/logo.svg') + '" onerror="this.src=\'/logo.svg\'">' +
-        '<div class="grow"><div class="nm">' + esc(p.name) + ' <span style="color:var(--text-dim);font-weight:500">v'+p.version+'</span></div>' +
-        '<div class="ds">' + esc(p.description||'') + '</div><div class="chips">' + chips + '</div></div>';
-      const sw = document.createElement('label'); sw.className = 'switch';
-      const inp = document.createElement('input'); inp.type = 'checkbox';
-      inp.checked = !!state.p[p.internalName];
-      inp.onchange = () => { if (inp.checked) state.p[p.internalName] = 1; else delete state.p[p.internalName]; save(); updateStats(); gen(); };
-      const sl = document.createElement('span'); sl.className = 'sl';
-      sw.append(inp, sl); row.append(sw);
-      list.append(row);
-    });
-    sec.append(list); root.append(sec);
+  allPlugins().forEach(p => {
+    if (q && !(p.name+' '+p.internalName+' '+(p.description||'')).toLowerCase().includes(q)) return;
+    if (fRepo && (!repoOf(p) || repoOf(p).name !== fRepo)) return;
+    if (fLang && (p.language||'') !== fLang) return;
+    if (hideDead && p.loaded && p.health === 'down') return;
+    if (hideFailed && !p.loaded) return;
+    const row = document.createElement('div');
+    row.className = 'prov' + (state.p[p.internalName] ? ' on' : '');
+    const chips = (p.tvTypes||[]).slice(0,3).map(t => '<span class="chip">'+esc(t)+'</span>').join('')
+      + (p.language ? '<span class="chip lang">'+esc(p.language)+'</span>' : '')
+      + (p.loaded ? (p.health === 'up' ? '<span class="chip up">up</span>' : (p.health === 'down' ? '<span class="chip dead">down</span>' : '')) : '<span class="chip dead">load failed</span>');
+    row.innerHTML =
+      '<img src="' + esc(p.iconUrl||'/logo.svg') + '" onerror="this.src=\'/logo.svg\'">' +
+      '<div class="grow"><div class="nm">' + esc(p.name) + ' <span style="color:var(--text-dim);font-weight:500">v'+p.version+'</span></div>' +
+      '<div class="ds">' + esc(p.description||'') + '</div><div class="chips">' + chips + '</div></div>';
+    row.onclick = () => { if (state.p[p.internalName]) delete state.p[p.internalName]; else state.p[p.internalName] = 1; save(); renderAll(); };
+    root.append(row);
   });
   updateStats();
-  // status table
-  const tb = document.getElementById('statusRows');
-  tb.innerHTML = '';
-  allPlugins().sort((a,b) => (a.loaded===b.loaded) ? a.internalName.localeCompare(b.internalName) : (a.loaded?1:-1)).forEach(p => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = '<td style="font-weight:600">' + esc(p.name) + '</td>' +
-      '<td style="color:var(--text-dim)">' + esc((DATA.repos.find(r => r.plugins.includes(p))||{}).name||'') + '</td>' +
-      '<td style="color:var(--text-dim)">' + p.version + '</td>' +
-      '<td class="' + (p.loaded?'st-ok':'st-err') + '">' + (p.loaded?'loaded':'failed') + '</td>' +
-      '<td><div class="errtext" title="' + esc(p.error||'') + '">' + esc(p.error||(p.providers||[]).slice(0,2).join(', ')) + '</div></td>';
-    tb.append(tr);
-  });
-  document.getElementById('syncLine').textContent = DATA.syncing ? 'syncing…' : ('last sync ' + new Date(DATA.lastSync).toLocaleTimeString());
-  // repo cards
-  const rc = document.getElementById('repoCards'); rc.innerHTML = '';
-  DATA.repos.forEach(repo => {
-    const loaded = repo.plugins.filter(p => p.loaded).length;
-    const div = document.createElement('div'); div.className = 'repo-card';
-    div.innerHTML = '<div class="ic">📦</div><div class="grow"><div class="nm">' + esc(repo.name) + '</div>' +
-      '<div class="ds">' + loaded + ' / ' + repo.plugins.length + ' plugins loaded</div></div>';
-    const link = document.createElement('button'); link.className = 'btn'; link.textContent = 'Open repo ↗';
-    link.onclick = () => window.open('https://github.com/search?q=' + encodeURIComponent(repo.name + ' cloudstream'), '_blank');
-    div.append(link); rc.append(div);
-  });
 }
 function updateStats() {
   const all = allPlugins();
   document.getElementById('st-en').textContent = all.filter(p => state.p[p.internalName]).length;
   document.getElementById('st-av').textContent = all.filter(p => p.loaded).length + ' / ' + all.length;
+  document.getElementById('st-repos').textContent = (DATA&&DATA.repos||[]).length;
 }
-function save(){ localStorage.setItem('csb_state', JSON.stringify(state)); }
-function gen() {
-  const url = location.origin + '/' + B64(JSON.stringify(state)) + '/manifest.json';
-  document.getElementById('murl').value = url;
+function renderFiltersPage() {
+  const list = document.getElementById('orderList');
+  list.innerHTML = '';
+  const enabled = allPlugins().filter(p => state.p[p.internalName] && p.loaded);
+  const ordered = state.order.map(n => enabled.find(p => p.name === n)).filter(Boolean);
+  const rest = enabled.filter(p => state.order.indexOf(p.name) < 0).sort((a,b) => a.name.localeCompare(b.name));
+  const full = ordered.concat(rest);
+  state.order = full.map(p => p.name);
+  full.forEach((p, i) => {
+    const row = document.createElement('div'); row.className = 'order-row';
+    row.innerHTML = '<div class="grow">' + (i+1) + '. ' + esc(p.name) + '</div>';
+    const up = document.createElement('button'); up.className='arrow'; up.textContent='↑';
+    const dn = document.createElement('button'); dn.className='arrow'; dn.textContent='↓';
+    up.onclick = () => { if (i > 0) { const a = state.order; const t = a[i-1]; a[i-1] = a[i]; a[i] = t; save(); renderFiltersPage(); } };
+    dn.onclick = () => { const a = state.order; if (i < a.length-1) { const t = a[i+1]; a[i+1] = a[i]; a[i] = t; save(); renderFiltersPage(); } };
+    row.append(up, dn); list.append(row);
+  });
+  // quality chips state
+  [2160,1080,720,480,360].forEach(t => { const el = document.getElementById('q-'+t); el.checked = state.q.on.indexOf(t) >= 0; });
+  document.getElementById('qLabel').textContent = state.q.on.length === 5 ? 'All qualities' : state.q.on.length + ' of 5 tiers';
+  document.getElementById('opt-tier').value = String(state.q.tier || 0);
+  document.getElementById('opt-cam').checked = !!state.q.cam;
+  document.getElementById('opt-m').checked = !!state.m;
+  document.getElementById('opt-d').value = String(state.d || 25000);
 }
-document.getElementById('filter').oninput = render;
-document.getElementById('all-on').onclick = () => { allPlugins().forEach(p => state.p[p.internalName] = 1); save(); render(); gen(); };
-document.getElementById('all-off').onclick = () => { state.p = {}; save(); render(); gen(); };
+function renderFormatter() {
+  document.getElementById('fmt').value = ['original','modern','minimal'].indexOf(state.fmt) >= 0 ? state.fmt : 'custom';
+  document.getElementById('customBox').style.display = state.fmt.startsWith('custom') ? 'block' : 'none';
+  document.getElementById('fmt-name').value = state.fmtName || '{provider} {quality}';
+  document.getElementById('fmt-title').value = state.fmtTitle || '{link}';
+  const provider = 'VegaMovies', quality = '1080p', link = 'Movie.Name.2024.1080p.WEB-DL.mkv';
+  let n, t;
+  const f = state.fmt.startsWith('custom') ? 'custom' : state.fmt;
+  if (f === 'modern') { n = provider + '\n' + quality; t = link; }
+  else if (f === 'minimal') { n = 'CSB ' + quality; t = link; }
+  else if (f === 'custom') {
+    const tpl = s => s.replace('{provider}', provider).replace('{quality}', quality).replace('{link}', link);
+    n = tpl(state.fmtName || ''); t = tpl(state.fmtTitle || '');
+  } else { n = 'CSB ' + quality; t = provider + ' • ' + link; }
+  document.getElementById('pv-name').textContent = n;
+  document.getElementById('pv-title').textContent = t;
+}
+function renderStatus() {
+  const all = allPlugins();
+  document.getElementById('hs-total').textContent = all.length;
+  document.getElementById('hs-up').textContent = all.filter(p => p.loaded && p.health === 'up').length;
+  document.getElementById('hs-down').textContent = all.filter(p => p.loaded && p.health === 'down').length;
+  document.getElementById('hs-unk').textContent = all.filter(p => !p.loaded || (p.health !== 'up' && p.health !== 'down')).length;
+  document.getElementById('syncLine').textContent = DATA.syncing ? 'syncing…' : (DATA.healthRunning ? 'health check running…' : ('last sync ' + new Date(DATA.lastSync).toLocaleTimeString()));
+  document.getElementById('statusRows').innerHTML = '';
+  allPlugins().sort((a,b) => (a.loaded===b.loaded) ? a.internalName.localeCompare(b.internalName) : (a.loaded?1:-1)).forEach(p => {
+    const tr = document.createElement('tr');
+    const h = p.health || 'unchecked';
+    const cls = h === 'up' ? 'st-ok' : (h === 'down' ? 'st-err' : 'st-unk');
+    const label = !p.loaded ? 'load failed' : (h === 'up' ? 'UP' : (h === 'down' ? 'DOWN' : 'unchecked'));
+    const ago = p.lastOk ? ' · worked ' + agoStr(p.lastOk) : '';
+    tr.innerHTML = '<td style="font-weight:600">' + esc(p.name) + '</td>' +
+      '<td style="color:var(--text-dim)">' + esc((repoOf(p)||{}).name||'') + '</td>' +
+      '<td class="' + cls + '">' + label + ago + '</td>' +
+      '<td><div class="errtext" title="' + esc(p.error||'') + '">' + esc(p.error||(p.providers||[]).slice(0,2).join(', ')) + '</div></td>';
+    document.getElementById('statusRows').append(tr);
+  });
+  document.getElementById('healthbtn').disabled = !!DATA.healthRunning;
+  document.getElementById('healthbtn').innerHTML = DATA.healthRunning ? '<span class="spin"></span> checking…' : '▶ Run health check';
+}
+function agoStr(ts) {
+  const m = Math.round((Date.now() - ts) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60); if (h < 24) return h + 'h ago';
+  return Math.round(h/24) + 'd ago';
+}
+function renderRepos() {
+  const rc = document.getElementById('repoCards'); rc.innerHTML = '';
+  (DATA.repos||[]).forEach(repo => {
+    const loaded = repo.plugins.filter(p => p.loaded).length;
+    const div = document.createElement('div'); div.className = 'repo-card';
+    const icon = repo.url.indexOf('CNCVerse') >= 0 ? 'https://raw.githubusercontent.com/NivinCNC/CNCVerse-Cloud-Stream-Extension/refs/heads/builds/cnc.png' : '/logo.svg';
+    div.innerHTML = '<div class="ic"><img src="' + esc(icon) + '" onerror="this.src=\'/logo.svg\'"></div>' +
+      '<div class="grow"><div class="nm">' + esc(repo.name) + '</div><div class="ds">' + esc(repo.description||'') + '</div></div>' +
+      '<span class="pill">' + loaded + ' / ' + repo.plugins.length + ' sources</span>';
+    const gh = document.createElement('button'); gh.className = 'btn small'; gh.textContent = 'Open ↗';
+    gh.onclick = () => window.open(repo.url.replace('/raw.githubusercontent.com/','/github.com/').split('/refs/')[0].replace(/\/builds\/.*$/,'').replace(/\/main\/.*$/,'').replace(/\/master\/.*$/,''), '_blank');
+    const rm = document.createElement('button'); rm.className = 'btn small danger'; rm.textContent = 'Remove';
+    rm.onclick = () => {
+      if (!confirm('Remove repo ' + repo.name + ' and stop syncing its plugins?')) return;
+      fetch('/api/repos/remove?url=' + encodeURIComponent(repo.url)).then(r => r.json()).then(d => { document.getElementById('addMsg').textContent = d.message; poll(); });
+    };
+    div.append(gh, rm); rc.append(div);
+  });
+  document.getElementById('repoCount').textContent = (DATA.repos||[]).length + ' repos';
+}
+function renderAll() { renderGrid(); renderFiltersPage(); renderFormatter(); renderStatus(); renderRepos(); gen(); }
+
+// ---------- wiring ----------
+document.getElementById('filter').oninput = renderGrid;
+document.getElementById('f-repo').onchange = renderGrid;
+document.getElementById('f-lang').onchange = renderGrid;
+document.getElementById('f-dead').onchange = renderGrid;
+document.getElementById('f-failed').onchange = renderGrid;
+document.getElementById('all-on').onclick = () => { allPlugins().filter(p => p.loaded).forEach(p => state.p[p.internalName] = 1); save(); renderAll(); };
+document.getElementById('all-off').onclick = () => { state.p = {}; save(); renderAll(); };
+document.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => {
+  const preset = b.dataset.preset;
+  state.p = {};
+  allPlugins().filter(p => p.loaded).forEach(p => {
+    const t = (p.tvTypes||[]).join(',');
+    if (preset === 'movies' && /Movie|TvSeries|AsianDrama|Documentary/.test(t)) state.p[p.internalName] = 1;
+    if (preset === 'anime' && /Anime|Cartoon|OVA/.test(t)) state.p[p.internalName] = 1;
+    if (preset === 'live' && /Live/.test(t)) state.p[p.internalName] = 1;
+    if (preset === 'core' && /CNC Repo|Phisher|Megix|raghav/.test((repoOf(p)||{}).name||'')) state.p[p.internalName] = 1;
+  });
+  save(); renderAll();
+});
+[2160,1080,720,480,360].forEach(t => { document.getElementById('q-'+t).onchange = e => {
+  const on = new Set(state.q.on);
+  if (e.target.checked) on.add(t); else on.delete(t);
+  state.q.on = Array.from(on); save(); renderFiltersPage(); gen();
+}; });
+document.getElementById('opt-tier').onchange = e => { state.q.tier = parseInt(e.target.value); save(); gen(); };
+document.getElementById('opt-cam').onchange = e => { state.q.cam = e.target.checked ? 1 : 0; save(); gen(); };
 document.getElementById('opt-c').onchange = e => { state.c = e.target.checked; save(); gen(); };
 document.getElementById('opt-m').onchange = e => { state.m = e.target.checked; save(); gen(); };
 document.getElementById('opt-d').onchange = e => { state.d = parseInt(e.target.value); save(); gen(); };
+document.getElementById('order-reset').onclick = () => { state.order = []; save(); renderFiltersPage(); gen(); };
+document.getElementById('fmt').onchange = e => { state.fmt = e.target.value; save(); renderFormatter(); gen(); };
+document.getElementById('fmt-name').oninput = e => { state.fmtName = e.target.value; save(); renderFormatter(); gen(); };
+document.getElementById('fmt-title').oninput = e => { state.fmtTitle = e.target.value; save(); renderFormatter(); gen(); };
 document.getElementById('resync').onclick = () => {
   const b = document.getElementById('resync'); b.disabled = true; b.innerHTML = '<span class="spin"></span> syncing…';
   fetch('/api/resync').then(() => poll()).catch(() => { b.disabled = false; b.textContent = '🔄 Resync repos'; });
+};
+document.getElementById('healthbtn').onclick = () => {
+  fetch('/api/health').then(() => poll()).catch(() => {});
+};
+document.getElementById('add-btn').onclick = () => {
+  const url = document.getElementById('add-url').value.trim();
+  if (!url) return;
+  fetch('/api/repos/add?url=' + encodeURIComponent(url) + '&name=' + encodeURIComponent(document.getElementById('add-name').value.trim()))
+    .then(r => r.json()).then(d => { document.getElementById('addMsg').textContent = d.message; if (d.ok) { document.getElementById('add-url').value = ''; document.getElementById('add-name').value = ''; poll(); } });
 };
 document.getElementById('copy').onclick = () => {
   const v = document.getElementById('murl').value;
@@ -350,25 +556,24 @@ async function boot() {
   try {
     const r = await fetch('/api/repos'); DATA = await r.json();
     allPlugins().forEach(p => { if (!(p.internalName in state.p) && p.loaded) state.p[p.internalName] = 1; });
-    document.getElementById('opt-c').checked = !!state.c;
-    document.getElementById('opt-m').checked = !!state.m;
-    document.getElementById('opt-d').value = String(state.d || 25000);
-    render(); gen();
+    // populate repo + language filters
+    const fr = document.getElementById('f-repo');
+    (DATA.repos||[]).forEach(r2 => { const o = document.createElement('option'); o.value = r2.name; o.textContent = r2.name; fr.append(o); });
+    const fl = document.getElementById('f-lang');
+    Array.from(new Set(allPlugins().map(p => p.language).filter(Boolean))).sort().forEach(l => { const o = document.createElement('option'); o.value = l; o.textContent = l; fl.append(o); });
+    renderAll();
   } catch(e) {
     document.getElementById('syncLine').textContent = '⚠ failed to load repo data';
   }
 }
 function poll() {
   fetch('/api/repos').then(r => r.json()).then(d => {
-    DATA = d; render(); gen();
-    const b = document.getElementById('resync');
-    if (d.syncing) setTimeout(poll, 5000);
-    else { b.disabled = false; b.textContent = '🔄 Resync repos'; }
+    DATA = d; renderAll();
+    if (d.syncing || d.healthRunning) setTimeout(poll, 5000);
   }).catch(() => {});
 }
 boot();
-setInterval(() => { fetch('/api/repos').then(r => r.json()).then(d => { DATA = d; render(); gen(); }); }, 15000);
+setInterval(() => { fetch('/api/repos').then(r => r.json()).then(d => { DATA = d; renderAll(); }); }, 20000);
 </script>
 </body>
-</html>""".trimIndent()
-}
+</html>

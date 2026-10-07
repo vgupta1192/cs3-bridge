@@ -95,8 +95,26 @@ object HttpApi {
 
 
     private fun api(ex: HttpExchange, segs: List<String>) {
+        val q = ex.requestURI.query ?: ""
+        val qp = q.split("&").mapNotNull {
+            val i = it.indexOf('='); if (i <= 0) null else it.substring(0, i) to URLDecoder.decode(it.substring(i + 1), "UTF-8")
+        }.toMap()
         when (segs.getOrNull(1)) {
-            "repos" -> sendJson(ex, 200, reposJson())
+            "repos" -> when (segs.getOrNull(2)) {
+                "add" -> {
+                    val res = Repos.addRepo(qp["name"] ?: "", qp["url"] ?: "")
+                    sendJson(ex, 200, mapOf("ok" to res.first, "message" to res.second))
+                }
+                "remove" -> {
+                    val res = Repos.removeRepo(qp["url"] ?: "")
+                    sendJson(ex, 200, mapOf("ok" to res.first, "message" to res.second))
+                }
+                else -> sendJson(ex, 200, reposJson())
+            }
+            "health" -> {
+                val started = Repos.startHealthCheck()
+                sendJson(ex, 200, mapOf("ok" to true, "running" to started))
+            }
             "resync" -> {
                 val force = ex.requestURI.query?.contains("force") == true
                 Thread {
@@ -112,11 +130,14 @@ object HttpApi {
 
 
     private fun reposJson(): Map<String, Any?> = linkedMapOf(
-        "repos" to Cfg.repos.map { repo ->
+        "repos" to Repos.loadRepos().map { repo ->
             linkedMapOf(
                 "name" to repo.name,
+                "url" to repo.pluginsUrl,
+                "description" to repo.description,
                 "plugins" to Repos.plugins.values.filter { it.repo == repo.name }.sortedBy { it.internalName }
                     .map { p ->
+                        val h = Repos.healthOf(p.internalName)
                         linkedMapOf(
                             "internalName" to p.internalName,
                             "name" to p.name,
@@ -128,12 +149,16 @@ object HttpApi {
                             "loaded" to p.loaded,
                             "error" to p.error,
                             "providers" to p.providerNames,
+                            "health" to h.status,
+                            "lastOk" to h.lastOk,
+                            "lastCheck" to h.lastCheck,
                         )
                     },
             )
         },
         "syncing" to Repos.isSyncing(),
         "lastSync" to Repos.lastSyncAt(),
+        "healthRunning" to Repos.isHealthRunning(),
     )
 
 

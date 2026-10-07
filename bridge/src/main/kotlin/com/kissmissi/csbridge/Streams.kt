@@ -25,8 +25,20 @@ import kotlinx.coroutines.withTimeoutOrNull
 import me.xdrop.fuzzywuzzy.FuzzySearch
 import java.util.Base64
 
-class BridgeConfig(val providers: Set<String>, val catalogs: Boolean, val magnets: Boolean, val deadlineMs: Long? = null) {
+class BridgeConfig(
+    val providers: Set<String>,
+    val catalogs: Boolean,
+    val magnets: Boolean,
+    val deadlineMs: Long? = null,
+    val qualities: Set<Int> = setOf(2160, 1080, 720, 480, 360),
+    val maxPerTier: Int = 0,
+    val blockCam: Boolean = false,
+    val fmt: String = "original",
+    val order: List<String> = emptyList(),
+) {
     companion object {
+        val CORE_REPOS = setOf("CNC Repo (All Language)", "Phisher Repo", "Megix Repo (Hindi & English)", "raghav repo")
+
         fun decode(s: String): BridgeConfig {
             return try {
                 val fixed = s.replace('-', '+').replace('_', '/') + "=".repeat((4 - s.length % 4) % 4)
@@ -34,11 +46,22 @@ class BridgeConfig(val providers: Set<String>, val catalogs: Boolean, val magnet
                 val root = jacksonObjectMapper().readValue<Map<String, Any>>(json)
                 val p = (root["p"] as? Map<*, *>)?.filterValues { (it as? Number)?.toInt() != 0 }
                     ?.keys?.map { it.toString() }?.toSet() ?: emptySet()
-                BridgeConfig(p, (root["c"] as? Number)?.toInt() == 1, (root["m"] as? Number)?.toInt() == 1,
-                    (root["d"] as? Number)?.toLong())
+                val q = root["q"] as? Map<*, *>
+                val qual = (q?.get("on") as? List<*>)?.mapNotNull { (it as? Number)?.toInt() }?.toSet()
+                    ?: setOf(2160, 1080, 720, 480, 360)
+                BridgeConfig(
+                    p, (root["c"] as? Number)?.toInt() == 1, (root["m"] as? Number)?.toInt() == 1,
+                    (root["d"] as? Number)?.toLong(),
+                    qual,
+                    (q?.get("tier") as? Number)?.toInt() ?: 0,
+                    (q?.get("cam") as? Number)?.toInt() == 1,
+                    root["fmt"]?.toString() ?: "original",
+                    (root["order"] as? List<*>)?.map { it.toString() } ?: emptyList(),
+                )
             } catch (e: Exception) {
                 BridgeConfig(
-                    Repos.plugins.values.filter { it.loaded }.map { it.internalName }.toSet(), true, false, null
+                    Repos.plugins.values.filter { it.loaded && it.repo in CORE_REPOS }.map { it.internalName }.toSet(),
+                    true, false, null
                 )
             }
         }
@@ -80,6 +103,32 @@ object Streams {
     }
 
 
+    private val camRegex = Regex("(?i)\\b(cam|hdcam|hd-cam|hdts|telecine|telesync|screener|ts)\\b")
+
+    private fun isCam(link: ExtractorLink): Boolean =
+        camRegex.containsMatchIn(link.name) || camRegex.containsMatchIn(link.source) || link.quality in 1..479 && camRegex.containsMatchIn(link.url)
+
+    private fun tierOf(link: ExtractorLink): Int = when {
+        link.quality >= 2160 -> 2160
+        link.quality >= 1080 -> 1080
+        link.quality >= 720 -> 720
+        link.quality >= 480 -> 480
+        link.quality > 0 -> 360
+        else -> 0
+    }
+
+    /** Apply the formatter preset; returns (name, title, description). */
+    private fun format(cfg: BridgeConfig, provider: String, link: ExtractorLink, q: String): Pair<String, String> = when {
+        cfg.fmt == "modern" -> Pair(if (q.isBlank()) provider else "$provider\n$q", link.name)
+        cfg.fmt == "minimal" -> Pair(if (q.isBlank()) "CSB" else "CSB $q", link.name)
+        cfg.fmt.startsWith("custom:") -> {
+            val parts = cfg.fmt.removePrefix("custom:").split("|", limit = 2)
+            fun tpl(t: String) = t.replace("{provider}", provider).replace("{quality}", q).replace("{link}", link.name)
+            Pair(tpl(parts.getOrElse(0) { "{provider} {quality}" }), tpl(parts.getOrElse(1) { "{link}" }))
+        }
+        else -> Pair(if (q.isBlank()) "CSB" else "CSB $q", "$provider • ${link.name}")
+    }
+
     private fun qualityLabel(q: Int): String = when {
         q >= 2160 -> "4K"
         q >= 1440 -> "1440p"
@@ -92,10 +141,10 @@ object Streams {
     }
 
 
-    fun toStremioStream(link: ExtractorLink, providerName: String, magnets: Boolean): Map<String, Any?>? {
+    fun toStremioStream(link: ExtractorLink, providerName: String, cfg: BridgeConfig): Map<String, Any?>? {
         if (link.url.isBlank()) return null
         if (link.type == ExtractorLinkType.TORRENT || link.type == ExtractorLinkType.MAGNET) {
-            if (!magnets) return null
+            if (!cfg.magnets) return null
             return linkedMapOf(
                 "name" to "CSB torrent",
                 "title" to "$providerName • torrent",
@@ -105,10 +154,10 @@ object Streams {
         }
         val headers = runCatching { link.getAllHeaders().filter { it.value.isNotBlank() } }.getOrDefault(emptyMap())
         val q = qualityLabel(link.quality)
-        val firstLine = "CSB" + if (q.isNotBlank()) " $q" else ""
+        val (firstLine, titleLine) = format(cfg, providerName, link, q)
         val stream = linkedMapOf<String, Any?>(
             "name" to firstLine,
-            "title" to "$providerName • ${link.name}",
+            "title" to titleLine,
             "description" to "$providerName • ${link.name}",
             "url" to link.url,
         )
@@ -261,14 +310,27 @@ object Streams {
             jobs.forEach { it.cancel() }
 
 
-            val out = ArrayList<Map<String, Any?>>()
+            // map + filter
+            data class Row(val stream: Map<String, Any?>, val label: String, val link: ExtractorLink)
+            val rank = cfg.order.withIndex().associate { it.value.lowercase() to it.index }
+            var rows = ArrayList<Row>()
             val seen = HashSet<String>()
             for ((label, links) in collected) {
                 for (link in links) {
-                    val s = toStremioStream(link, label, cfg.magnets) ?: continue
-                    if (seen.add(link.url)) out.add(s)
+                    if (cfg.blockCam && isCam(link)) continue
+                    val tier = tierOf(link)
+                    if (tier != 0 && tier !in cfg.qualities) continue
+                    val st = toStremioStream(link, label, cfg) ?: continue
+                    if (seen.add(link.url)) rows.add(Row(st, label, link))
                 }
             }
-            out
+            // provider order (stable): ordered providers first, then the rest
+            rows.sortBy { rank[it.label.lowercase()] ?: 1000 }
+            // max per quality tier
+            if (cfg.maxPerTier > 0) {
+                val counts = HashMap<Int, Int>()
+                rows = ArrayList(rows.filter { val t = tierOf(it.link); if (t == 0) true else (counts.merge(t, 1, Int::plus) <= cfg.maxPerTier) })
+            }
+            rows.map { it.stream }
         }
 }

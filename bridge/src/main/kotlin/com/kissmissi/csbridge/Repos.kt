@@ -13,8 +13,13 @@ import com.lagradost.common.logging.AppLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.coroutineScope
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.ConcurrentHashMap
 
 data class PluginInfo(
     val internalName: String,
@@ -32,10 +37,15 @@ data class PluginInfo(
     var providerNames: List<String> = emptyList()
 }
 
+data class HealthEntry(var status: String = "unchecked", var lastOk: Long = 0, var lastCheck: Long = 0, var ms: Long = 0)
+
 object Repos {
     private val mapper = jacksonObjectMapper().configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
     private val syncing = AtomicBoolean(false)
     private var lastSync: Long = 0
+    private val health = ConcurrentHashMap<String, HealthEntry>()
+    private val healthRunning = AtomicBoolean(false)
+    private val healthFile get() = File(Cfg.dataDir, "health.json")
 
     // internalName -> plugin info + state
     val plugins = java.util.concurrent.ConcurrentHashMap<String, PluginInfo>()
@@ -54,6 +64,39 @@ object Repos {
         val apiVersion: Int = 1,
     )
 
+    // ---- repo list management (data/repos.json, seeded with Cfg.DEFAULT_REPOS) ----
+    private val reposLock = Any()
+
+    fun loadRepos(): List<Cfg.Repo> = synchronized(reposLock) {
+        if (!Cfg.reposFile.exists()) return Cfg.DEFAULT_REPOS
+        runCatching { mapper.readValue<List<Cfg.Repo>>(Cfg.reposFile) }.getOrDefault(Cfg.DEFAULT_REPOS)
+    }
+
+    private fun saveRepos(list: List<Cfg.Repo>) = synchronized(reposLock) {
+        Cfg.dataDir.mkdirs()
+        Cfg.reposFile.writeText(mapper.writerWithDefaultPrettyPrinter().writeValueAsString(list))
+    }
+
+    fun addRepo(name: String, url: String): Pair<Boolean, String> {
+        val u = url.trim().trimEnd('/')
+        if (!u.startsWith("http")) return false to "URL must start with http(s)"
+        val repos = loadRepos()
+        if (repos.any { it.url.trimEnd('/') == u }) return false to "Repository already added"
+        val displayName = name.trim().ifBlank { u.substringAfterLast('/').removeSuffix(".json") }
+        val ok = runCatching { runBlocking { withTimeout(15000) { Resolver.httpGet(u) != null } } }.getOrDefault(false)
+        saveRepos(repos + Cfg.Repo(displayName, u))
+        if (!ok) return true to "Added (warning: could not fetch plugins.json right now - it will be retried on sync)"
+        return true to "Added. Run Resync to load its plugins."
+    }
+
+    fun removeRepo(url: String): Pair<Boolean, String> {
+        val repos = loadRepos()
+        val remaining = repos.filter { it.url.trimEnd('/') != url.trim().trimEnd('/') }
+        if (remaining.size == repos.size) return false to "Repository not found"
+        saveRepos(remaining)
+        return true to "Removed. Run Resync to drop its plugins."
+    }
+
 
     fun providersOf(info: PluginInfo): List<MainAPI> =
         APIHolder.allProviders.filter { it.sourcePlugin == info.file.absolutePath }
@@ -69,7 +112,7 @@ object Repos {
         try {
             Cfg.extensionsDir.mkdirs()
             var downloaded = 0; var updated = 0; var failed = 0; var loadedNow = 0
-            for (repo in Cfg.repos) {
+            for (repo in loadRepos()) {
                 val json = try {
                     withContext(Dispatchers.IO) {
                         val req = okhttp3.Request.Builder().url(repo.pluginsUrl).build()
@@ -160,5 +203,66 @@ object Repos {
                 try { Thread.sleep(6L * 3600 * 1000); runBlocking { sync() } } catch (t: Throwable) { AppLogger.e("periodic sync failed", t) }
             }
         }.apply { isDaemon = true; name = "repo-sync" }.start()
+    }
+
+    // ---- health checks ----
+    private fun loadHealth() {
+        if (health.isNotEmpty()) return
+        runCatching { mapper.readValue<Map<String, HealthEntry>>(healthFile) }
+            .getOrDefault(emptyMap())
+            .forEach { (k, v) -> health[k] = v }
+    }
+
+    private fun persistHealth() {
+        runCatching { healthFile.writeText(mapper.writeValueAsString(health)) }
+    }
+
+    fun healthOf(internalName: String): HealthEntry {
+        loadHealth()
+        return health[internalName] ?: HealthEntry()
+    }
+
+    fun isHealthRunning() = healthRunning.get()
+
+    /** Probe every loaded plugin with a common search; async, results land in health.json. */
+    fun startHealthCheck(): Boolean {
+        loadHealth()
+        if (!healthRunning.compareAndSet(false, true)) return false
+        Thread {
+            try {
+                runBlocking {
+                    val sem = Semaphore(6)
+                    for ((_, info) in plugins.toList().sortedBy { it.second.internalName }) {
+                        if (!info.loaded) continue
+                        launch {
+                            sem.acquire()
+                            try {
+                                val t0 = System.currentTimeMillis()
+                                val entry = HealthEntry(status = "down", lastCheck = System.currentTimeMillis())
+                                try {
+                                    withTimeout(14000) {
+                                        val provs = providersOf(info)
+                                        val anyOk = provs.any { p ->
+                                            runCatching { p.search("inception", 1); true }.getOrDefault(false)
+                                        }
+                                        if (anyOk) { entry.status = "up"; entry.lastOk = System.currentTimeMillis() }
+                                    }
+                                } catch (_: Exception) {}
+                                entry.ms = System.currentTimeMillis() - t0
+                                health[info.internalName] = entry
+                                persistHealth()
+                            } finally {
+                                sem.release()
+                            }
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
+                AppLogger.e("health check run failed", t)
+            } finally {
+                healthRunning.set(false)
+            }
+        }.apply { isDaemon = true; name = "health-check" }.start()
+        return true
     }
 }
