@@ -137,7 +137,7 @@ object ExtensionLoader {
             // Retry once on linkage errors with the shared dependencies loader
             // as parent — some plugins import classes from ANOTHER repo's jar
             // (AnimeWorld imports it.dogior.hadEnough.* from doGior's jars).
-            val attempts = listOf<java.net.URL?>(null, SafePluginClassLoader.sharedDependenciesLoader)
+            val attempts = listOf<ClassLoader?>(null, SafePluginClassLoader.sharedDependenciesLoader)
             for (shared in attempts) {
                 try {
                     val classLoader = if (shared == null)

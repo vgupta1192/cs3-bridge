@@ -131,21 +131,22 @@ class SafePluginClassLoader(
          * failed with a linkage error is retried with this loader as parent.
          */
         @Volatile
-        var sharedDependenciesLoader: java.net.URLClassLoader? = null
+        var sharedDependenciesLoader: SharedDepsLoader? = null
 
         @Synchronized
         fun addToSharedDependencies(jar: java.io.File) {
-            val loader = sharedDependenciesLoader ?: java.net.URLClassLoader(emptyArray(), ExtensionLoader::class.java.classLoader).also {
+            val loader = sharedDependenciesLoader ?: SharedDepsLoader(ExtensionLoader::class.java.classLoader).also {
                 sharedDependenciesLoader = it
             }
-            runCatching { loader.addURL(jar.toURI().toURL()) }
+            runCatching { loader.addUrl(jar.toURI().toURL()) }
         }
     }
 
     private fun isBlocked(name: String): Boolean {
-        // Filesystem: java.io.File is ALLOWED (plugins legitimately touch their
-        // own cache dirs — blocking it broke AnimeRift's static init); raw
-        // stream/reader classes stay allowed as before.
+        // Unsafe NIO (channels, files) blocked; charset + buffers allowed.
+        // java.io.File and java.lang.reflect.* are ALLOWED (plugins use both
+        // legitimately; blocking them broke AnimeRift's static init and six
+        // 3rabi providers at class load).
         if (name.startsWith("java.nio.")) {
             if (!name.startsWith("java.nio.charset.") && !name.contains("Buffer")) {
                 return true
@@ -195,4 +196,9 @@ class SafePluginClassLoader(
 
         return false
     }
+}
+
+/** URLClassLoader with a public addURL — hosts the shared cross-plugin jar space. */
+class SharedDepsLoader(parent: ClassLoader) : java.net.URLClassLoader(emptyArray(), parent) {
+    public override fun addURL(url: java.net.URL) = super.addURL(url)
 }
