@@ -286,12 +286,13 @@ object Streams {
                         setOf(TvType.Movie, TvType.AnimeMovie)
                     else
                         setOf(TvType.TvSeries, TvType.Anime, TvType.Cartoon, TvType.OVA, TvType.AsianDrama, TvType.Documentary)
-                    for ((info, provs) in Repos.enabledProviders(cfg.providers)) {
-                        for (prov in provs) {
-                            if (prov.supportedTypes.intersect(want).isEmpty()) continue
-                            launchProvider(info.name) {
-                                scrapeProvider(prov, info.name, titleInfo, kind, requestedS, requestedE)
-                            }
+                    val rank = cfg.order.withIndex().associate { it.value.lowercase() to it.index }
+                    val pairs = Repos.enabledProviders(cfg.providers).flatMap { (info, provs) ->
+                        provs.filter { it.supportedTypes.intersect(want).isNotEmpty() }.map { info to it }
+                    }.sortedBy { rank[it.first.name.lowercase()] ?: 1000 }
+                    for ((info, prov) in pairs) {
+                        launchProvider(info.name) {
+                            scrapeProvider(prov, info.name, titleInfo, kind, requestedS, requestedE)
                         }
                     }
                 }
