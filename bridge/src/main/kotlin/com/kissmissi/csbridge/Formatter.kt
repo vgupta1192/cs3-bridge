@@ -12,10 +12,6 @@ import org.graalvm.polyglot.Value
  * compiled templates, so this never approaches the scrape deadline. Everything
  * crossing the polyglot boundary is a JSON string, so no host access is
  * enabled on the context.
- *
- * Concatenation order matters: the FIELD_REGISTRY.stream mutation must sit
- * between the engine bundle and the glue, because the engine builds its
- * canonical-field map while it evaluates.
  */
 object Formatter {
     private val mapper = jacksonObjectMapper()
@@ -41,7 +37,6 @@ object Formatter {
                 .build()
             val combined = script("csb-prelude.js") + "\n" +
                 script("aiostreams-formatter.js") + "\n" +
-                "FIELD_REGISTRY.stream.push('linkName', 'source');\n" +
                 "var __PENGUPLAY_PRESETS = " + script("penguplay-presets.json") + ";\n" +
                 script("csb-glue.js")
             ctx.eval("js", combined)

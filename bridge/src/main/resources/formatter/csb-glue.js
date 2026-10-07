@@ -1,11 +1,10 @@
 /*
  * CloudStream Bridge formatter glue — runs inside GraalJS right after the
- * AIOStreams engine bundle (reads module.exports). The loader (Kotlin
- * Formatter / the node test harness) concatenates in this order:
- *   csb-prelude.js  →  aiostreams-formatter.js  →  FIELD_REGISTRY.push(...)  →  penguplay JSON  →  csb-glue.js
- * The FIELD_REGISTRY mutation MUST sit between bundle and glue: the engine
- * builds its canonical-field map at eval time, and stream.linkName /
- * stream.source would render {unknown_propertyName(...)} without it.
+ * AIOStreams engine bundle (reads module.exports). Loader order:
+ *   csb-prelude.js → aiostreams-formatter.js → penguplay JSON → csb-glue.js
+ * (stream.linkName / stream.source are registered inside the bundle's
+ * FIELD_REGISTRY itself — the engine's canonical-field map is built at eval
+ * time, so later pushes would not take).
  *
  * Ported from Stream Master's providers/lib/formatter.js, adapted to
  * CloudStream ExtractorLink input:
@@ -19,7 +18,6 @@
  *   stream.linkName  — the extractor's own label for this link
  *   stream.source    — the extractor class that produced the link
  */
-FIELD_REGISTRY.stream.push("linkName", "source");
 
 (function () {
   const ENGINE = module.exports;
@@ -39,12 +37,12 @@ FIELD_REGISTRY.stream.push("linkName", "source");
     "csb-modern": {
       label: "CloudStream Bridge · Modern",
       name: `{stream.provider}\n{stream.resolution::default('')}`,
-      description: `{stream.filename::default('{stream.linkName}')}`,
+      description: `{stream.filename::exists["{stream.filename}"||"{stream.linkName::default('CloudStream stream')}"]}`,
     },
     "csb-minimal": {
       label: "CloudStream Bridge · Minimal",
       name: `CSB {stream.resolution::default('')}`,
-      description: `{stream.filename::default('{stream.linkName}')}`,
+      description: `{stream.filename::exists["{stream.filename}"||"{stream.linkName::default('CloudStream stream')}"]}`,
     },
   };
 

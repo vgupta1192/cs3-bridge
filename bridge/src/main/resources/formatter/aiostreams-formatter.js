@@ -4,6 +4,7 @@
  * + utils (languages, formatter-definitions). License: AGPL-3.0-only (see AIOSTREAMS-LICENSE).
  * Local change: engine/fields.ts FIELD_REGISTRY.stream gained PenguPlay fields (specs, streamType)
  * and Stream Master fields (speed, fast, speedLabel, speedMbps, startMs, startTime, provider, server).
+ * CloudStream Bridge change: FIELD_REGISTRY.stream also gained linkName + source (this bundle only).
  * Rebuild: see vendor/README-formatter.md
  */
 "use strict";
@@ -47,6 +48,11 @@ function rawText(text) {
 var FIELD_REGISTRY = {
   config: ["addonName"],
   stream: [
+    // CloudStream Bridge extras: the extractor's own label + extractor class
+    // (MUST live here, not pushed later — CANONICAL_FIELDS below is built at
+    // eval time and only accepts fields that exist here)
+    "linkName",
+    "source",
     // PenguPlay extras (pengu.uk formatter): spec chips + container/stream type
     "specs",
     "streamType",
