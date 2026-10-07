@@ -263,7 +263,8 @@ object Streams {
             val start = System.currentTimeMillis()
             while (System.currentTimeMillis() - start < deadline) {
                 val remaining = deadline - (System.currentTimeMillis() - start)
-                val got = withTimeoutOrNull(remaining) { channel.receive() } ?: break
+                val r = withTimeoutOrNull(remaining) { channel.receiveCatching() } ?: break
+                val got = r.getOrNull() ?: break
                 synchronized(collected) { collected.add(got) }
             }
         }
@@ -285,7 +286,8 @@ object Streams {
                 runCatching {
                     val start = System.currentTimeMillis()
                     while (!parent.isCompleted && System.currentTimeMillis() - start < 600_000) {
-                        val got = withTimeoutOrNull(30_000) { channel.receive() } ?: break
+                        val r = withTimeoutOrNull(30_000) { channel.receiveCatching() } ?: break
+                        val got = r.getOrNull() ?: break
                         synchronized(collected) { collected.add(got) }
                     }
                     val full = buildResult(cfg, collected)
@@ -324,11 +326,11 @@ object Streams {
         return rows.map { it.stream }
     }
 
-    private suspend fun fetchAll(cfg: BridgeConfig, kind: String, id: String, channel: Channel<Pair<String, List<ExtractorLink>>>) {
+    private suspend fun fetchAll(cfg: BridgeConfig, kind: String, id: String, channel: Channel<Pair<String, List<ExtractorLink>>>) = kotlinx.coroutines.coroutineScope {
         val sem = Semaphore(Cfg.maxConcurrent)
 
         fun launchProvider(label: String, work: suspend () -> List<ExtractorLink>) {
-            scrapeScope.launch(Dispatchers.IO) {
+            this@coroutineScope.launch(Dispatchers.IO) {
                 try {
                     sem.acquire()
                     try {
