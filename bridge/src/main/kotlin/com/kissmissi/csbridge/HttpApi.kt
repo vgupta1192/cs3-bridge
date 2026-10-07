@@ -133,7 +133,7 @@ object HttpApi {
         "repos" to Repos.loadRepos().map { repo ->
             linkedMapOf(
                 "name" to repo.name,
-                "url" to repo.pluginsUrl,
+                "url" to repo.url,
                 "description" to repo.description,
                 "plugins" to Repos.plugins.values.filter { it.repo == repo.name }.sortedBy { it.internalName }
                     .map { p ->
@@ -190,7 +190,7 @@ object HttpApi {
             "id" to Cfg.ADDON_ID,
             "version" to Cfg.version,
             "name" to Cfg.ADDON_NAME,
-            "description" to "CloudStream extension bridge — streams from ${Cfg.repos.joinToString(", ") { it.name }} repos",
+            "description" to "CloudStream extension bridge — runs the community CloudStream repos server-side and serves them as one Stremio addon",
             "logo" to null,
             "types" to listOf("movie", "series", "other"),
             "resources" to if (cfg.catalogs) listOf("catalog", "meta", "stream") else listOf("stream"),

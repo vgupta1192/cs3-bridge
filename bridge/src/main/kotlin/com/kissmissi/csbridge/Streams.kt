@@ -329,7 +329,7 @@ object Streams {
             // max per quality tier
             if (cfg.maxPerTier > 0) {
                 val counts = HashMap<Int, Int>()
-                rows = ArrayList(rows.filter { val t = tierOf(it.link); if (t == 0) true else (counts.merge(t, 1, Int::plus) <= cfg.maxPerTier) })
+                rows = ArrayList(rows.filter { val t = tierOf(it.link); if (t == 0) true else run { val n = (counts[t] ?: 0) + 1; counts[t] = n; n <= cfg.maxPerTier } })
             }
             rows.map { it.stream }
         }

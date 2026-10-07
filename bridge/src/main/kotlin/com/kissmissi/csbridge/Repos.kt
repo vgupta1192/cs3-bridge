@@ -115,7 +115,7 @@ object Repos {
             for (repo in loadRepos()) {
                 val json = try {
                     withContext(Dispatchers.IO) {
-                        val req = okhttp3.Request.Builder().url(repo.pluginsUrl).build()
+                        val req = okhttp3.Request.Builder().url(repo.url).build()
                         app.baseClient.newCall(req).execute().use { resp ->
                             if (!resp.isSuccessful) throw RuntimeException("HTTP ${resp.code}")
                             resp.body?.string() ?: throw RuntimeException("empty body")

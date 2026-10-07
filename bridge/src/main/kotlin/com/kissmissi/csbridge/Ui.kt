@@ -576,4 +576,5 @@ boot();
 setInterval(() => { fetch('/api/repos').then(r => r.json()).then(d => { DATA = d; renderAll(); }); }, 20000);
 </script>
 </body>
-</html>
+</html>""".trimIndent()
+}
