@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.APIHolder
+import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.runtime.loader.ExtensionLoader
 import com.lagradost.common.logging.AppLogger
