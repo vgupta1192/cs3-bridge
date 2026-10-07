@@ -329,14 +329,21 @@ object Streams {
 
     private suspend fun fetchAll(cfg: BridgeConfig, kind: String, id: String, channel: Channel<Pair<String, List<ExtractorLink>>>) = kotlinx.coroutines.coroutineScope {
         val sem = Semaphore(Cfg.maxConcurrent)
+        val attempted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val succeeded = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val retryDefs = java.util.concurrent.ConcurrentHashMap<String, Pair<String, suspend () -> List<ExtractorLink>>>()
 
-        fun launchProvider(label: String, work: suspend () -> List<ExtractorLink>) {
+        fun launchProvider(label: String, key: String, work: suspend () -> List<ExtractorLink>) {
+            attempted.add(key)
             this@coroutineScope.launch(scrapeDispatcher) {
                 try {
                     sem.acquire()
                     try {
                         val res = work()
-                        if (res.isNotEmpty()) channel.send(label to res)
+                        if (res.isNotEmpty()) {
+                            succeeded.add(key)
+                            channel.send(label to res)
+                        }
                     } finally {
                         sem.release()
                     }
@@ -357,7 +364,7 @@ object Streams {
                     for ((info, provs) in Repos.enabledProviders(cfg.providers)) {
                         if (info.internalName != provName) continue
                         for (prov in provs) {
-                            launchProvider(info.name) {
+                            launchProvider(info.name, info.internalName + "#" + System.identityHashCode(prov)) {
                                 val loaded = runCatching { prov.load(url) }.onFailure { if (it is CancellationException) throw it }.getOrNull()
                                 linksFromResponse(prov, loaded, requestedS, requestedE)
                             }
@@ -382,8 +389,22 @@ object Streams {
                     provs.filter { it.supportedTypes.intersect(want).isNotEmpty() }.map { info to it }
                 }.sortedBy { rank[it.first.name.lowercase()] ?: 1000 }
                 for ((info, prov) in pairs) {
-                    launchProvider(info.name) {
+                    val key = info.internalName + "#" + System.identityHashCode(prov)
+                    retryDefs[key] = info.name to { scrapeProvider(prov, titleInfo, requestedS, requestedE) }
+                    launchProvider(info.name, key) {
                         scrapeProvider(prov, titleInfo, requestedS, requestedE)
+                    }
+                }
+            }
+
+            // pass 1 done (this scope waited for all children); retry each provider
+            // that yielded nothing exactly once - concurrent scraping is flaky
+            val empty = attempted.filter { it !in succeeded }
+            if (empty.isNotEmpty()) {
+                AppLogger.i("Streams: retrying ${empty.size} empty providers")
+                for (key in empty) {
+                    retryDefs[key]?.let { (label, work) ->
+                        launchProvider(label, key + ":r", work)
                     }
                 }
             }
