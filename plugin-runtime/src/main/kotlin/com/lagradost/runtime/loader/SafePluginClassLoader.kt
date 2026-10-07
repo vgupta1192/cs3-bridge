@@ -50,7 +50,7 @@ class SafePluginClassLoader(
         val cw = org.objectweb.asm.ClassWriter(0)
 
         // Heuristic to detect if it's supposed to be an interface
-        val isInterface = name.endsWith("Listener") || name.endsWith("Callback") || name.endsWith("Observer") || name.contains("\$On")
+        val isInterface = name.endsWith("Listener") || name.endsWith("Callback") || name.endsWith("Callbacks") || name.endsWith("Observer") || name.contains("\$On")
 
         val access = if (isInterface) {
             org.objectweb.asm.Opcodes.ACC_PUBLIC + org.objectweb.asm.Opcodes.ACC_ABSTRACT + org.objectweb.asm.Opcodes.ACC_INTERFACE

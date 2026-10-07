@@ -78,6 +78,14 @@ public class Context {
         return null;
     }
 
+    public android.content.pm.ApplicationInfo getApplicationInfo() {
+        return new android.content.pm.ApplicationInfo();
+    }
+
+    public ContentResolver getContentResolver() {
+        return new ContentResolver();
+    }
+
     private static File getDefaultBaseDir() {
         String os = System.getProperty("os.name").toLowerCase();
         String basePath;
