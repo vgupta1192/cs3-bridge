@@ -138,7 +138,7 @@ class SafePluginClassLoader(
             val loader = sharedDependenciesLoader ?: SharedDepsLoader(ExtensionLoader::class.java.classLoader).also {
                 sharedDependenciesLoader = it
             }
-            runCatching { loader.addUrl(jar.toURI().toURL()) }
+            runCatching { loader.addURL(jar.toURI().toURL()) }
         }
     }
 
