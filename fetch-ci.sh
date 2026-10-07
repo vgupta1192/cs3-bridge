@@ -12,7 +12,8 @@ import json,sys
 r=json.load(sys.stdin)
 assets=[a for a in r.get('assets',[]) if a['name'].startswith('cs3-bridge-dist')]
 if not assets: sys.exit('no dist asset on latest release')
-assets.sort(key=lambda a: a['name'])
+import re
+assets.sort(key=lambda a: [int(x) if x.isdigit() else x for x in re.split(r'(\\d+)', a['name'])])
 print(assets[-1]['browser_download_url'])
 ")
 echo "==> downloading $url"

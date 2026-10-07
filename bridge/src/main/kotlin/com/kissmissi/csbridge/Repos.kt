@@ -64,6 +64,31 @@ object Repos {
         val apiVersion: Int = 1,
     )
 
+    /** Repo URLs may point at a raw plugin array or a repository.json wrapper with pluginLists. */
+    private suspend fun fetchRepoPlugins(url: String): List<RawPlugin> {
+        val body = withContext(Dispatchers.IO) {
+            val req = okhttp3.Request.Builder().url(url).build()
+            app.baseClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) throw RuntimeException("HTTP ${resp.code}")
+                resp.body?.string() ?: throw RuntimeException("empty body")
+            }
+        }
+        val node = mapper.readTree(body)
+        return if (node.isArray) {
+            mapper.readValue(body)
+        } else {
+            val lists = node.path("pluginLists")
+            if (lists.isArray && lists.size() > 0) {
+                lists.map { it.asText() }.flatMap { sub ->
+                    runCatching { fetchRepoPlugins(sub) }.getOrElse {
+                        AppLogger.e("RepoSync: sub-list failed $sub: ${it.message}")
+                        emptyList()
+                    }
+                }
+            } else emptyList()
+        }
+    }
+
     // ---- repo list management (data/repos.json, seeded with Cfg.DEFAULT_REPOS) ----
     private val reposLock = Any()
 
@@ -113,21 +138,8 @@ object Repos {
             Cfg.extensionsDir.mkdirs()
             var downloaded = 0; var updated = 0; var failed = 0; var loadedNow = 0
             for (repo in loadRepos()) {
-                val json = try {
-                    withContext(Dispatchers.IO) {
-                        val req = okhttp3.Request.Builder().url(repo.url).build()
-                        app.baseClient.newCall(req).execute().use { resp ->
-                            if (!resp.isSuccessful) throw RuntimeException("HTTP ${resp.code}")
-                            resp.body?.string() ?: throw RuntimeException("empty body")
-                        }
-                    }
-                } catch (e: Exception) {
-                    AppLogger.e("RepoSync: failed to fetch ${repo.name}: ${e.message}")
-                    failed++
-                    continue
-                }
-                val entries: List<RawPlugin> = try { mapper.readValue(json) } catch (e: Exception) {
-                    AppLogger.e("RepoSync: failed to parse ${repo.name}: ${e.message}")
+                val entries: List<RawPlugin> = try { fetchRepoPlugins(repo.url) } catch (e: Exception) {
+                    AppLogger.e("RepoSync: failed to fetch/parse ${repo.name}: ${e.message}")
                     failed++
                     continue
                 }
