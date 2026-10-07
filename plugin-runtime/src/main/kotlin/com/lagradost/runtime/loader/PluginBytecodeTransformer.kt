@@ -44,6 +44,15 @@ object PluginBytecodeTransformer {
 
                         val visitor = object : ClassVisitor(Opcodes.ASM9, writer) {
 
+                            override fun visitMethod(
+                                access: Int,
+                                name: String,
+                                descriptor: String?,
+                                signature: String?,
+                                exceptions: Array<out String>?,
+                            ): MethodVisitor {
+                                val mv = super.visitMethod(access, fixMethodName(name), descriptor, signature, exceptions)
+                                return object : MethodVisitor(Opcodes.ASM9, mv) {
                                     override fun visitTryCatchBlock(
                                         start: Label?,
                                         end: Label?,
