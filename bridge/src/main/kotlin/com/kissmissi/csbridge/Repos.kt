@@ -176,7 +176,9 @@ object Repos {
                         try {
                             ExtensionLoader.loadAndInit(file, forceBypassSecurity = true)
                             val provs = providersOf(info)
-                            if (provs.isEmpty()) throw RuntimeException("no providers registered")
+                            // settings/utility plugins (SubscriptionManager,
+                            // M3UPlaylistPlayer, ...) load fine but register no
+                            // stream providers — count them as loaded
                             info.loaded = true
                             info.providerNames = provs.map { it.name }
                             loadedNow++

@@ -38,3 +38,9 @@ var app = Requests(responseParser = jsonResponseParser).apply {
 var insecureApp = Requests(responseParser = jsonResponseParser).apply {
     defaultHeaders = mapOf("user-agent" to USER_AGENT)
 }
+
+/**
+ * Bridge addition: the CloudStream app exposes the shared client through
+ * MainActivity.getApp(); nearly every provider plugin calls it at runtime.
+ */
+fun getApp(): Requests = app

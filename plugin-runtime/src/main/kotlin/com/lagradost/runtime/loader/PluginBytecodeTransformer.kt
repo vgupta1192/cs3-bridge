@@ -10,6 +10,10 @@ import java.util.zip.ZipOutputStream
 
 object PluginBytecodeTransformer {
 
+    private fun AppLoggerWarn(msg: String) {
+        runCatching { com.lagradost.common.logging.AppLogger.i("BytecodeTransformer: $msg") }
+    }
+
     fun transform(jarFile: File) {
         val tempFile = File(jarFile.absolutePath + ".tmp")
         ZipInputStream(FileInputStream(jarFile)).use { zis ->
@@ -22,7 +26,21 @@ object PluginBytecodeTransformer {
                     val bytes = zis.readBytes()
                     if (entry.name.endsWith(".class")) {
                         val reader = ClassReader(bytes)
-                        val writer = ClassWriter(0)
+                        // COMPUTE_FRAMES: dex2jar emits wrong/missing stack map
+                        // frames for some methods ("Expecting a stackmap frame
+                        // at branch target" VerifyError on AnimeUnity). Rebuild
+                        // them; getCommonSuperClass must not classload plugin
+                        // types, so fall back to Object on any lookup failure
+                        // (over-conservative merges always verify).
+                        val writer = object : ClassWriter(ClassWriter.COMPUTE_FRAMES) {
+                            override fun getCommonSuperClass(type1: String, type2: String): String {
+                                return try {
+                                    super.getCommonSuperClass(type1, type2)
+                                } catch (t: Throwable) {
+                                    "java/lang/Object"
+                                }
+                            }
+                        }
 
                         val visitor = object : ClassVisitor(Opcodes.ASM9, writer) {
 
@@ -72,8 +90,15 @@ object PluginBytecodeTransformer {
                             }
                         }
 
-                        reader.accept(visitor, 0)
-                        zos.write(writer.toByteArray())
+                        try {
+                            reader.accept(visitor, 0)
+                            zos.write(writer.toByteArray())
+                        } catch (t: Throwable) {
+                            // transformation (incl. frame recompute) failed —
+                            // keep the raw dex2jar output for this class
+                            AppLoggerWarn("frame recompute failed for ${entry.name}: $t")
+                            zos.write(bytes)
+                        }
                     } else {
                         zos.write(bytes)
                     }

@@ -1,5 +1,6 @@
 package com.lagradost.cloudstream3.syncproviders
 
+import com.lagradost.cloudstream3.syncproviders.providers.AniListApi
 import com.lagradost.cloudstream3.syncproviders.providers.SimklApi
 
 /**
@@ -8,7 +9,20 @@ import com.lagradost.cloudstream3.syncproviders.providers.SimklApi
  */
 class AccountManager {
     companion object {
+        private val simklApi = SimklApi()
+        private val aniListApi = AniListApi()
+
         @JvmStatic
-        fun getSimklApi(): SimklApi = SimklApi()
+        fun getSimklApi(): SimklApi = simklApi
+
+        @JvmStatic
+        fun getAniListApi(): AniListApi = aniListApi
+
+        /** No auth providers exist headless. */
+        @JvmStatic
+        fun getAllApis(): Array<AuthRepo> = emptyArray()
+
+        @JvmStatic
+        fun getSyncApis(): Array<SyncRepo> = emptyArray()
     }
 }

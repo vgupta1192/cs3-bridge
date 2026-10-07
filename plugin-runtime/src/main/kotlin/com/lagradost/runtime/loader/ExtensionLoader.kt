@@ -78,18 +78,31 @@ object ExtensionLoader {
                 }
 
                 val convertedJar = File(jarFile.parentFile, jarFile.nameWithoutExtension + "-jvm.jar")
-                if (!convertedJar.exists()) {
+                // <64 B = empty artifact of an interrupted conversion (dex2jar
+                // writes progressively; a killed run used to poison the cache
+                // forever, e.g. AniSnatch/AniSuge shipped 22-byte jars)
+                if (!convertedJar.exists() || convertedJar.length() < 64) {
+                    convertedJar.delete()
                     AppLogger.i("Transpiling Dalvik classes.dex to JVM classes.jar...")
                     // Try to avoid System.exit by calling doMain or just calling main
+                    val tmpJar = File(jarFile.parentFile, jarFile.nameWithoutExtension + "-jvm.jar.tmp")
+                    tmpJar.delete()
                     try {
-                        Dex2jarCmd().doMain("-f", dexFile.absolutePath, "-o", convertedJar.absolutePath)
+                        Dex2jarCmd().doMain("-f", dexFile.absolutePath, "-o", tmpJar.absolutePath)
                     } catch (e: Exception) {
                         // fallback to main if doMain is not public
-                        Dex2jarCmd.main("-f", dexFile.absolutePath, "-o", convertedJar.absolutePath)
+                        Dex2jarCmd.main("-f", dexFile.absolutePath, "-o", tmpJar.absolutePath)
+                    }
+                    if (!tmpJar.exists() || tmpJar.length() < 64) {
+                        throw IllegalStateException("dex2jar produced no output for ${jarFile.name}")
                     }
 
                     // Structurally rewrite the JAR to fix dex2jar renaming Kotlin inline class methods
-                    PluginBytecodeTransformer.transform(convertedJar)
+                    PluginBytecodeTransformer.transform(tmpJar)
+                    if (!tmpJar.renameTo(convertedJar)) {
+                        convertedJar.delete()
+                        if (!tmpJar.renameTo(convertedJar)) throw IllegalStateException("could not finalize ${convertedJar.name}")
+                    }
                 }
 
                 jarToLoad = convertedJar
@@ -114,28 +127,54 @@ object ExtensionLoader {
         }
 
         val nativeIntercept = nativePluginInterceptor?.invoke(pluginClassName!!)
-        val pluginInstance: BasePlugin = if (nativeIntercept != null) {
+        var pluginInstance: BasePlugin? = null
+        if (nativeIntercept != null) {
             AppLogger.i("Intercepted plugin $pluginClassName! Injecting native JVM implementation.")
-            nativeIntercept
+            pluginInstance = nativeIntercept
         } else {
-            val safeParentLoader = SafePluginClassLoader(this::class.java.classLoader)
-            val classLoader = URLClassLoader(arrayOf(jarToLoad.toURI().toURL()), safeParentLoader)
-            val pluginClass = classLoader.loadClass(pluginClassName)
-
-            // MegaPlugin VerifiedRepo MixIn injection
-            if (pluginClassName == "com.mega.MegaPlugin") {
+            var lastFailure: Throwable? = null
+            // First attempt: isolated loader (parent-first over the bridge).
+            // Retry once on linkage errors with the shared dependencies loader
+            // as parent — some plugins import classes from ANOTHER repo's jar
+            // (AnimeWorld imports it.dogior.hadEnough.* from doGior's jars).
+            val attempts = listOf<java.net.URL?>(null, SafePluginClassLoader.sharedDependenciesLoader)
+            for (shared in attempts) {
                 try {
-                    val verifiedRepoClass = classLoader.loadClass("com.mega.MegaPlugin\$getRepositories\$VerifiedRepo")
-                    com.lagradost.cloudstream3.mapper.addMixIn(verifiedRepoClass, VerifiedRepoMixIn::class.java)
-                } catch (e: Exception) {
-                    AppLogger.i("Failed to inject VerifiedRepo MixIn for MegaPlugin (it might not be loaded yet)")
+                    val classLoader = if (shared == null)
+                        SafePluginClassLoader(jarToLoad.toURI().toURL(), this::class.java.classLoader)
+                    else
+                        SafePluginClassLoader(jarToLoad.toURI().toURL(), shared)
+                    val pluginClass = classLoader.loadClass(pluginClassName)
+
+                    // MegaPlugin VerifiedRepo MixIn injection
+                    if (pluginClassName == "com.mega.MegaPlugin") {
+                        try {
+                            val verifiedRepoClass = classLoader.loadClass("com.mega.MegaPlugin\$getRepositories\$VerifiedRepo")
+                            com.lagradost.cloudstream3.mapper.addMixIn(verifiedRepoClass, VerifiedRepoMixIn::class.java)
+                        } catch (e: Exception) {
+                            AppLogger.i("Failed to inject VerifiedRepo MixIn for MegaPlugin (it might not be loaded yet)")
+                        }
+                    }
+
+                    val instance = pluginClass.getDeclaredConstructor().newInstance() as BasePlugin
+                    val finalInternalName = internalNameFromManifest ?: nameFromManifest ?: pluginClassName?.split(".")?.lastOrNull() ?: jarFile.nameWithoutExtension.removeSuffix("-jvm")
+                    classLoaders[classLoader] = finalInternalName
+                    pluginInstance = instance
+                    // publish this jar so later plugins can resolve its classes
+                    SafePluginClassLoader.addToSharedDependencies(jarToLoad)
+                    break
+                } catch (t: Throwable) {
+                    if (t is LinkageError || t is ClassNotFoundException || t is ClassCastException) {
+                        lastFailure = t
+                        AppLogger.i("Load attempt failed for $pluginClassName (${t::class.java.simpleName}), ${if (shared == null) "retrying with shared deps" else "giving up"}")
+                    } else {
+                        throw t
+                    }
                 }
             }
-
-            val instance = pluginClass.getDeclaredConstructor().newInstance() as BasePlugin
-            val finalInternalName = internalNameFromManifest ?: nameFromManifest ?: pluginClassName?.split(".")?.lastOrNull() ?: jarFile.nameWithoutExtension.removeSuffix("-jvm")
-            classLoaders[classLoader] = finalInternalName
-            instance
+            if (pluginInstance == null) {
+                throw lastFailure ?: IllegalStateException("could not load $pluginClassName")
+            }
         }
 
         pluginInstance.filename = jarFile.absolutePath

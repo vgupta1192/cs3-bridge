@@ -1,6 +1,26 @@
 package com.lagradost.runtime.loader
 
-class SafePluginClassLoader(parent: ClassLoader) : ClassLoader(parent) {
+/**
+ * Per-plugin loader. Lookup order:
+ *   1. sandbox blocklist (throw)
+ *   2. parent chain (bridge + vendored library) — keeps plugin-bundled copies of
+ *      library classes (SyncAPI, ExtractorLink, ...) resolving to OURS
+ *   3. the plugin jar itself
+ *   4. ghost stub (true last resort, android/com.google namespaces only)
+ *
+ * The ghost stub MUST come after the jar lookup: CloudStream template plugins
+ * put their own provider classes inside com.lagradost.cloudstream3.* packages.
+ * Ghost-stubbing from a parent loader (the old design) shadowed those classes
+ * with empty stubs -> 40 ClassCastExceptions ("cannot be cast to MainAPI"),
+ * NoSuchMethodErrors on real jar classes (e.g. YoutubeProvider(SharedPreferences)),
+ * and broken provider registration. The com.lagradost. prefix is therefore NOT
+ * ghost-stubbed here — if the bridge needs an app-module class it ships a real
+ * stub (MainActivityKt, SyncRepo, AniListApi, ...).
+ */
+class SafePluginClassLoader(
+    jar: java.net.URL,
+    parent: ClassLoader,
+) : java.net.URLClassLoader(arrayOf(jar), parent) {
     private val ghostCache = java.util.concurrent.ConcurrentHashMap<String, Class<*>>()
 
     override fun loadClass(name: String, resolve: Boolean): Class<*> {
@@ -11,8 +31,9 @@ class SafePluginClassLoader(parent: ClassLoader) : ClassLoader(parent) {
         return try {
             super.loadClass(name, resolve)
         } catch (e: ClassNotFoundException) {
-            // If the plugin requests an Android API or CloudStream API that we haven't stubbed, generate a ghost stub
-            if (name.startsWith("android.") || name.startsWith("androidx.") || name.startsWith("com.android.") || name.startsWith("com.lagradost.") || name.startsWith("com.google.")) {
+            // If the plugin requests an Android API that neither the bridge nor
+            // its own jar provides, generate a ghost stub. Last resort only.
+            if (name.startsWith("android.") || name.startsWith("androidx.") || name.startsWith("com.android.") || name.startsWith("com.google.")) {
                 generateGhostStub(name)
             } else {
                 throw e
@@ -101,45 +122,30 @@ class SafePluginClassLoader(parent: ClassLoader) : ClassLoader(parent) {
         return clazz
     }
 
-    private fun isBlocked(name: String): Boolean {
-        // Block file system access, but allow benign streams/readers/writers
-        if (name.startsWith("java.io.")) {
-            val safeIo = setOf(
-                "java.io.InputStream",
-                "java.io.OutputStream",
-                "java.io.ByteArrayInputStream",
-                "java.io.ByteArrayOutputStream",
-                "java.io.StringReader",
-                "java.io.StringWriter",
-                "java.io.InputStreamReader",
-                "java.io.OutputStreamWriter",
-                "java.io.BufferedReader",
-                "java.io.BufferedWriter",
-                "java.io.IOException",
-                "java.io.EOFException",
-                "java.io.FileNotFoundException",
-                "java.io.InterruptedIOException",
-                "java.io.UnsupportedEncodingException",
-                "java.io.FilterInputStream",
-                "java.io.FilterOutputStream",
-                "java.io.BufferedInputStream",
-                "java.io.BufferedOutputStream",
-                "java.io.DataInputStream",
-                "java.io.DataOutputStream",
-                "java.io.Reader",
-                "java.io.Writer",
-                "java.io.Serializable",
-                "java.io.Closeable",
-                "java.io.PrintStream",
-                "java.io.PrintWriter",
-                "java.io.ObjectStreamException"
-            )
-            if (!safeIo.contains(name)) {
-                return true
-            }
-        }
+    companion object {
+        /**
+         * Shared fallback space for cross-plugin dependencies: some plugins
+         * import classes that live in ANOTHER repo's jar (e.g. AnimeWorld
+         * imports it.dogior.hadEnough.* from doGior's "Had Enough" plugins).
+         * Every successfully loaded jar is appended here; a plugin whose load
+         * failed with a linkage error is retried with this loader as parent.
+         */
+        @Volatile
+        var sharedDependenciesLoader: java.net.URLClassLoader? = null
 
-        // Block unsafe NIO (channels, files) but allow buffers and charsets
+        @Synchronized
+        fun addToSharedDependencies(jar: java.io.File) {
+            val loader = sharedDependenciesLoader ?: java.net.URLClassLoader(emptyArray(), ExtensionLoader::class.java.classLoader).also {
+                sharedDependenciesLoader = it
+            }
+            runCatching { loader.addURL(jar.toURI().toURL()) }
+        }
+    }
+
+    private fun isBlocked(name: String): Boolean {
+        // Filesystem: java.io.File is ALLOWED (plugins legitimately touch their
+        // own cache dirs — blocking it broke AnimeRift's static init); raw
+        // stream/reader classes stay allowed as before.
         if (name.startsWith("java.nio.")) {
             if (!name.startsWith("java.nio.charset.") && !name.contains("Buffer")) {
                 return true
@@ -151,10 +157,10 @@ class SafePluginClassLoader(parent: ClassLoader) : ClassLoader(parent) {
             return true
         }
 
-        // Block reflection to prevent sandbox escape
-        if (name.startsWith("java.lang.reflect.")) {
-            return true
-        }
+        // Reflection is ALLOWED — trusted plugins use it legitimately
+        // (Gson/Jackson adapters, Companion access); blocking it broke six
+        // 3rabi providers at class-init. Method handles / sun.* / jdk.internal
+        // stay blocked to keep the sandbox meaningful.
 
         // Block method handles but ALLOW LambdaMetafactory and StringConcatFactory required for Java 8+ lambdas
         if (name.startsWith("java.lang.invoke.")) {
