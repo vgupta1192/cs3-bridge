@@ -187,7 +187,7 @@ object ExtensionLoader {
     private fun convertDexInSubprocess(dexFile: File, outJar: File, sourceName: String) {
         val cp = System.getProperty("java.class.path") ?: throw IllegalStateException("no classpath")
         val proc = ProcessBuilder(
-            "java", "-Xmx900m", "-cp", cp,
+            "java", "-Xmx1200m", "-cp", cp,
             "com.googlecode.dex2jar.tools.Dex2jarCmd",
             "-f", dexFile.absolutePath, "-o", outJar.absolutePath,
         ).redirectErrorStream(true).start()
