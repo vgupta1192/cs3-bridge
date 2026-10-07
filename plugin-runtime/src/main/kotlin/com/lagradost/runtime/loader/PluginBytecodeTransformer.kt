@@ -45,6 +45,18 @@ object PluginBytecodeTransformer {
                                         var newOpcode = opcode
                                         var newOwner = owner
                                         var newDesc = descriptor
+                                        var methodName = methodName
+
+                                        // dex2jar mangles JVM-illegal Kotlin value-class name mangling ('-' -> '_'),
+                                        // while modern Kotlin emits the raw dashed name into class files.
+                                        if (owner.startsWith("kotlinx/coroutines/")) {
+                                            val m = Regex("^(.+?)_([A-Za-z0-9]{7,8})$").find(methodName)
+                                            if (m != null) {
+                                                methodName = m.groupValues[1] + "-" + m.groupValues[2]
+                                            } else if (methodName == "runBlockingK") {
+                                                methodName = "runBlocking"
+                                            }
+                                        }
 
                                         if (owner == "java/lang/Runtime" && (methodName == "exec" || methodName == "loadLibrary" || methodName == "load" || methodName == "exit" || methodName == "halt")) {
                                             newOpcode = Opcodes.INVOKESTATIC

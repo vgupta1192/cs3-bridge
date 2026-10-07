@@ -9,6 +9,8 @@
       - CSBRIDGE_DATA_DIR=/app/data
       - CSBRIDGE_VERSION=1.0.0
       - TMDB_API_KEY=${WATCHLY_TMDB_API_KEY:-}
+    volumes:
+      - ./cs3-bridge/data:/app/data
     ports:
       - "127.0.0.1:7095:7095"
     labels:

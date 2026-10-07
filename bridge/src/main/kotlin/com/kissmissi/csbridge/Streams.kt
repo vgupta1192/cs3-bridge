@@ -25,7 +25,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import me.xdrop.fuzzywuzzy.FuzzySearch
 import java.util.Base64
 
-class BridgeConfig(val providers: Set<String>, val catalogs: Boolean, val magnets: Boolean) {
+class BridgeConfig(val providers: Set<String>, val catalogs: Boolean, val magnets: Boolean, val deadlineMs: Long? = null) {
     companion object {
         fun decode(s: String): BridgeConfig {
             return try {
@@ -34,10 +34,11 @@ class BridgeConfig(val providers: Set<String>, val catalogs: Boolean, val magnet
                 val root = jacksonObjectMapper().readValue<Map<String, Any>>(json)
                 val p = (root["p"] as? Map<*, *>)?.filterValues { (it as? Number)?.toInt() != 0 }
                     ?.keys?.map { it.toString() }?.toSet() ?: emptySet()
-                BridgeConfig(p, (root["c"] as? Number)?.toInt() == 1, (root["m"] as? Number)?.toInt() == 1)
+                BridgeConfig(p, (root["c"] as? Number)?.toInt() == 1, (root["m"] as? Number)?.toInt() == 1,
+                    (root["d"] as? Number)?.toLong())
             } catch (e: Exception) {
                 BridgeConfig(
-                    Repos.plugins.values.filter { it.loaded }.map { it.internalName }.toSet(), true, false
+                    Repos.plugins.values.filter { it.loaded }.map { it.internalName }.toSet(), true, false, null
                 )
             }
         }
@@ -173,14 +174,15 @@ object Streams {
     /** Main entry: streams for a stremio-style request. */
     fun streamsFor(cfg: BridgeConfig, kind: String, id: String): List<Map<String, Any?>> {
         val t0 = System.currentTimeMillis()
+        val deadline = cfg.deadlineMs ?: Cfg.deadlineMs
         val result = runBlocking {
-            withTimeoutOrNull(Cfg.deadlineMs + 8000) { fetchAll(cfg, kind, id) }
+            withTimeoutOrNull(deadline + 8000) { fetchAll(cfg, kind, id, deadline) }
         } ?: emptyList()
         AppLogger.i("Streams: $kind/$id -> ${result.size} streams in ${System.currentTimeMillis() - t0} ms")
         return result
     }
 
-    private suspend fun fetchAll(cfg: BridgeConfig, kind: String, id: String): List<Map<String, Any?>> =
+    private suspend fun fetchAll(cfg: BridgeConfig, kind: String, id: String, deadlineMs: Long): List<Map<String, Any?>> =
         coroutineScope {
             val channel = Channel<Pair<String, List<ExtractorLink>>>(Channel.UNLIMITED)
             val jobs = ArrayList<Job>()
@@ -251,7 +253,7 @@ object Streams {
             val collected = ArrayList<Pair<String, List<ExtractorLink>>>()
             val start = System.currentTimeMillis()
             while (collected.size < jobs.size) {
-                val remaining = Cfg.deadlineMs - (System.currentTimeMillis() - start)
+                val remaining = deadlineMs - (System.currentTimeMillis() - start)
                 if (remaining <= 0) break
                 val got = withTimeoutOrNull(remaining) { channel.receive() } ?: break
                 collected.add(got)

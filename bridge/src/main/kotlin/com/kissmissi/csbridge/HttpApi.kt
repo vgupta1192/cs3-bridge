@@ -99,8 +99,12 @@ object HttpApi {
             "repos" -> sendJson(ex, 200, reposJson())
             "resync" -> {
                 val force = ex.requestURI.query?.contains("force") == true
-                val msg = runBlocking { Repos.sync(force) }
-                sendJson(ex, 200, mapOf("ok" to true, "message" to msg))
+                Thread {
+                    try { runBlocking { Repos.sync(force) } } catch (t: Throwable) {
+                        AppLogger.e("resync failed", t)
+                    }
+                }.apply { isDaemon = true; name = "manual-resync" }.start()
+                sendJson(ex, 200, mapOf("ok" to true, "message" to "resync started"))
             }
             else -> sendJson(ex, 404, mapOf("error" to "unknown api"))
         }
