@@ -7,4 +7,7 @@ open class VideoClickAction(
     val callback: () -> Unit,
 ) {
     var sourcePlugin: String? = null
+
+    /** No-arg constructor for plugins that subclass this with their own defaults. */
+    constructor() : this("", 0, false, {})
 }
