@@ -7,7 +7,7 @@ object Cfg {
     val dataDir: File = File(System.getenv("CSBRIDGE_DATA_DIR") ?: "./data")
     val extensionsDir: File get() = File(dataDir, "extensions")
     val deadlineMs: Long = System.getenv("CSBRIDGE_DEADLINE_MS")?.toLongOrNull() ?: 28000L
-    val providerTimeoutMs: Long = System.getenv("CSBRIDGE_PROVIDER_TIMEOUT_MS")?.toLongOrNull() ?: 45000L
+    val providerTimeoutMs: Long = System.getenv("CSBRIDGE_PROVIDER_TIMEOUT_MS")?.toLongOrNull() ?: 120000L
     val maxConcurrent: Int = System.getenv("CSBRIDGE_MAX_CONCURRENT")?.toIntOrNull() ?: 48
     val tmdbKey: String? = System.getenv("TMDB_API_KEY")?.takeIf { it.isNotBlank() }
     val version: String = System.getenv("CSBRIDGE_VERSION") ?: "1.0.0"

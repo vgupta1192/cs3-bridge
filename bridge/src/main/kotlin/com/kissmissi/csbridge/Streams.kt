@@ -72,7 +72,8 @@ object Streams {
 
     // Detached scope: scraping outlives the HTTP request so slow providers never
     // block the response; whatever arrives before the deadline is returned.
-    private val scrapeScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+    private val scrapeDispatcher = Dispatchers.IO.limitedParallelism(128)
+    private val scrapeScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + scrapeDispatcher)
 
     fun b64(s: String): String = Base64.getUrlEncoder().withoutPadding().encodeToString(s.toByteArray())
     fun unb64(s: String): String {
@@ -330,7 +331,7 @@ object Streams {
         val sem = Semaphore(Cfg.maxConcurrent)
 
         fun launchProvider(label: String, work: suspend () -> List<ExtractorLink>) {
-            this@coroutineScope.launch(Dispatchers.IO) {
+            this@coroutineScope.launch(scrapeDispatcher) {
                 try {
                     sem.acquire()
                     try {
