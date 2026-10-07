@@ -64,7 +64,11 @@ object HttpApi {
 
     private fun handle(ex: HttpExchange) {
         val path = ex.requestURI.path ?: return
-        val segs = path.trim('/').split('/').filter { it.isNotBlank() }
+        var segs = path.trim('/').split('/').filter { it.isNotBlank() }
+        // base routes (no config segment) = default config, like /manifest.json
+        if (segs.isNotEmpty() && segs[0] in listOf("stream", "catalog", "meta")) {
+            segs = listOf("") + segs
+        }
         AppLogger.i("HTTP ${ex.requestMethod} $path")
 
         when {
@@ -240,7 +244,7 @@ object HttpApi {
     private fun catalog(ex: HttpExchange, segs: List<String>) {
         val cfg = BridgeConfig.decode(segs[0])
         val kind = segs[2]
-        val catId = segs[3]
+        val catId = segs[3].removeSuffix(".json")
         val extraRaw = segs.drop(4).joinToString("/").removeSuffix(".json")
         val extra = extraRaw.split("&").mapNotNull {
             val i = it.indexOf('='); if (i <= 0) null else it.substring(0, i) to URLDecoder.decode(it.substring(i + 1), "UTF-8")
