@@ -542,6 +542,8 @@ function pushInstall(){
 }
 function gen() {
   document.getElementById('murl').value = location.origin + '/' + INSTALL + '/manifest.json';
+  // the switch must show the saved value (it used to stay ON from the HTML default)
+  const oc = document.getElementById('opt-c'); if (oc) oc.checked = !!state.c;
   const ins = document.getElementById('install');
   if (ins) ins.href = 'stremio://' + location.host + '/' + INSTALL + '/manifest.json';
   const q = state.q.on.slice().sort((a,b) => b-a);
@@ -910,7 +912,7 @@ document.getElementById('opt-grp').onchange = e => { state.grp = e.target.value;
 document.getElementById('opt-sort').onchange = e => { state.sort = e.target.value; save(); };
 document.getElementById('f-type').onchange = () => renderGrid();
 document.getElementById('opt-cam').onchange = e => { state.q.cam = e.target.checked ? 1 : 0; save(); gen(); };
-document.getElementById('opt-c').onchange = e => { state.c = e.target.checked; save(); gen(); };
+document.getElementById('opt-c').onchange = e => { state.c = e.target.checked; save(); gen(); renderGrid(); };
 document.getElementById('opt-m').onchange = e => { state.m = e.target.checked; save(); gen(); };
 document.getElementById('opt-d').onchange = e => { state.dl = parseInt(e.target.value); save(); gen(); };
 document.getElementById('lg-f').onchange = e => { state.lgf = parseInt(e.target.value); save(); gen(); };
