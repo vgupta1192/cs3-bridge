@@ -84,7 +84,8 @@ object Warmer {
     /** Day: Cfg.warmDayConcurrency titles at once; night: Cfg.warmConcurrency. */
     private fun acquireSlot() {
         synchronized(slotLock) {
-            while (inUse >= (if (isNight()) Cfg.warmConcurrency else Cfg.warmDayConcurrency).coerceAtLeast(1)) slotLock.wait(10_000)
+            // day concurrency 0 = warm at night only (re-checked every 10 s)
+            while (inUse >= (if (isNight()) Cfg.warmConcurrency.coerceAtLeast(1) else Cfg.warmDayConcurrency)) slotLock.wait(10_000)
             inUse++
         }
     }

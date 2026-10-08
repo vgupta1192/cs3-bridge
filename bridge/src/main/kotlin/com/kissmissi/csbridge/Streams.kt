@@ -524,6 +524,10 @@ object Streams {
     private val liveGlobal = Semaphore(Cfg.globalMaxConcurrent)
     private val warmGlobal = Semaphore(Cfg.warmGlobalMaxConcurrent)
 
+    /** Live fan-outs currently running (first answer + their background tail). */
+    private val liveFanouts = java.util.concurrent.atomic.AtomicInteger(0)
+    fun liveBusy() = liveFanouts.get() > 0
+
     /** cacheKey -> background job that writes the full list (late merge). */
     private val lateJobs = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
 
@@ -586,11 +590,15 @@ object Streams {
         val noAttempt = java.util.concurrent.atomic.AtomicBoolean(false)
 
         if (cacheKey != null) activeScrapes[cacheKey] = true
+        if (!warm) liveFanouts.incrementAndGet()
         val parent = scrapeScope.launch {
             fetchAll(cfg, kind, id, channel, ctxRef, noAttempt, warm, priority)
             channel.close()
         }
-        parent.invokeOnCompletion { if (cacheKey != null) activeScrapes.remove(cacheKey) }
+        parent.invokeOnCompletion {
+            if (cacheKey != null) activeScrapes.remove(cacheKey)
+            if (!warm) liveFanouts.decrementAndGet()
+        }
 
         runBlocking {
             val start = System.currentTimeMillis()
@@ -792,6 +800,9 @@ object Streams {
                     // process-wide cap shared by every request (and a small
                     // separate one for the warmer): bursts of several titles
                     // used to run 70-100 provider scrapes at once (1.8 GiB peaks)
+                    // the warmer yields completely while any live fan-out runs:
+                    // no new warm provider scrape starts until it is done
+                    if (warm) while (liveFanouts.get() > 0) kotlinx.coroutines.delay(1000)
                     val global = if (warm) warmGlobal else liveGlobal
                     try { global.acquire() } catch (t: Throwable) { if (!lane) sem.release(); throw t }
                     try {
