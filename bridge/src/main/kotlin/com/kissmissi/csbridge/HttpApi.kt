@@ -123,6 +123,13 @@ object HttpApi {
             "breakers" -> sendJson(ex, 200, Streams.breakerState())
             "warm" -> sendJson(ex, 200, Warmer.stats())
             "health" -> {
+                // ?name=<internalName> = check just that provider, answered when done
+                qp["name"]?.takeIf { it.isNotBlank() }?.let { name ->
+                    val r = Repos.checkOne(name) ?: return sendJson(ex, 404, mapOf("ok" to false, "error" to "unknown provider"))
+                    val (info, h) = r
+                    return sendJson(ex, 200, mapOf("ok" to true, "internalName" to info.internalName, "health" to h.status,
+                        "lastOk" to h.lastOk, "lastCheck" to h.lastCheck, "ms" to h.ms, "loaded" to !Repos.isFailed(info), "error" to info.error))
+                }
                 val started = Repos.startHealthCheck()
                 sendJson(ex, 200, mapOf("ok" to true, "running" to started))
             }

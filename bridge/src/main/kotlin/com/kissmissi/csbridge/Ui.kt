@@ -69,6 +69,14 @@ section.card { background:var(--surface); border:1px solid var(--border); border
 .chipbtn.sel { background:var(--accent); border-color:var(--accent); color:#fff; }
 input, select { background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:8px 11px; font-family:inherit; font-size:13px; outline:none; }
 input:focus, select:focus { border-color:var(--accent); }
+/* custom chevron with room on the right (the native arrow sat flush against the border) */
+select { -webkit-appearance:none; appearance:none; padding-right:34px; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 12px center; background-size:12px; cursor:pointer; }
+/* opened option lists follow the theme instead of the OS light list */
+:root { color-scheme:dark; } [data-base-theme="light"] { color-scheme:light; }
+option { background:var(--surface); color:var(--text); }
+.hbtn { width:24px; height:24px; border-radius:7px; border:1px solid var(--border); background:var(--surface-active); color:var(--text-sub); font-size:13px; line-height:1; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; flex-shrink:0; padding:0; }
+.hbtn:hover { border-color:var(--accent); color:var(--accent); }
+.hbtn.busy { animation:sp .8s linear infinite; pointer-events:none; }
 .search { width:100%; border-radius:10px; padding:10px 14px; font-size:14px; margin-bottom:14px; }
 .search:focus { border-color:var(--accent); }
 .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:10px; max-height:560px; overflow-y:auto; padding-right:4px; }
@@ -387,7 +395,7 @@ textarea.tpl.small { min-height:64px; }
         </div>
         <div style="overflow-x:auto">
         <table>
-          <thead><tr><th>Source</th><th>Repo</th><th>Health</th><th>Detail</th></tr></thead>
+          <thead><tr><th>Source</th><th>Repo</th><th>Health</th><th>Detail</th><th title="Check one provider">Check</th></tr></thead>
           <tbody id="statusRows"></tbody>
         </table>
         </div>
@@ -592,6 +600,7 @@ function renderGrid() {
       (on ? '<div class="badges">' + (state.c ? '<span class="cat' + (catOn ? ' on' : '') + '" title="Show this source\'s catalogs in Stremio">CAT ' + (catOn ? 'ON' : 'OFF') + '</span>' : '') +
         (ordIdx >= 0 ? '<span class="ordn" title="Position in your provider order">' + (ordIdx+1) + '</span>' : '') + '</div>' : '');
     row.onclick = () => { if (state.p[p.internalName]) delete state.p[p.internalName]; else state.p[p.internalName] = 1; save(); renderAll(); };
+    row.append(healthButton(p));
     const catEl = row.querySelector('.cat');
     if (catEl) catEl.onclick = e => {
       e.stopPropagation();
@@ -812,6 +821,28 @@ document.querySelectorAll('[data-hf]').forEach(b => b.onclick = () => {
   document.querySelectorAll('[data-hf]').forEach(x => x.classList.toggle('sel', x === b));
   renderStatus();
 });
+// one provider's health check: same probe as the full run, result shown everywhere
+function healthButton(p) {
+  const b = document.createElement('button');
+  b.className = 'hbtn'; b.textContent = '↻'; b.title = 'Check ' + p.name + ' now';
+  b.onclick = e => { e.stopPropagation(); checkProvider(p, b); };
+  return b;
+}
+async function checkProvider(p, btn) {
+  if (btn) btn.classList.add('busy');
+  try {
+    const r = await fetch('/api/health?name=' + encodeURIComponent(p.internalName));
+    const d = await r.json();
+    if (d && d.ok) {
+      // update every copy of this plugin in the loaded data, then redraw all views
+      allPlugins().filter(x => x.internalName === p.internalName).forEach(x => {
+        x.health = d.health; x.lastOk = d.lastOk; x.lastCheck = d.lastCheck; x.loaded = d.loaded; x.error = d.error;
+      });
+      renderAll();
+    }
+  } catch(e) {}
+  finally { if (btn) btn.classList.remove('busy'); }
+}
 function renderStatus() {
   const all = allPlugins();
   document.getElementById('hs-total').textContent = all.length;
@@ -836,6 +867,7 @@ function renderStatus() {
       '<td style="color:var(--text-dim)">' + esc((repoOf(p)||{}).name||'') + '</td>' +
       '<td class="' + cls + '">' + label + ago + '</td>' +
       '<td><div class="errtext" title="' + esc(p.error||'') + '">' + esc(p.error||(p.providers||[]).slice(0,2).join(', ')) + '</div></td>';
+    const td = document.createElement('td'); td.append(healthButton(p)); tr.append(td);
     document.getElementById('statusRows').append(tr);
   });
   document.getElementById('healthbtn').disabled = !!DATA.healthRunning;

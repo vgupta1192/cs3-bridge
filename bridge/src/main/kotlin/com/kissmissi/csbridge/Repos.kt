@@ -477,6 +477,39 @@ object Repos {
 
     fun isHealthRunning() = healthRunning.get()
 
+    /** One provider probe: a common search on each of the plugin's providers, 14 s cap. */
+    private suspend fun probe(info: PluginInfo): HealthEntry {
+        val t0 = System.currentTimeMillis()
+        val entry = HealthEntry(status = "down", lastOk = healthOf(info.internalName).lastOk, lastCheck = System.currentTimeMillis())
+        try {
+            withTimeout(14000) {
+                val provs = providersOf(info)
+                val anyOk = provs.any { p ->
+                    runCatching { p.search("inception", 1); true }.getOrDefault(false)
+                }
+                if (anyOk) { entry.status = "up"; entry.lastOk = System.currentTimeMillis() }
+            }
+        } catch (_: Exception) {}
+        entry.ms = System.currentTimeMillis() - t0
+        return entry
+    }
+
+    /** Health check for ONE plugin (loads it if needed); result stored like the full run's. */
+    fun checkOne(internalName: String): Pair<PluginInfo, HealthEntry>? {
+        loadHealth()
+        val info = plugins[internalName] ?: return null
+        if (!ensureLoaded(info)) {
+            val e = HealthEntry(status = "down", lastOk = healthOf(internalName).lastOk, lastCheck = System.currentTimeMillis())
+            health[internalName] = e; persistHealth()
+            return info to e
+        }
+        val e = runBlocking { probe(info) }
+        health[internalName] = e
+        persistHealth()
+        AppLogger.i("Health: ${info.internalName} ${e.status} in ${e.ms} ms")
+        return info to e
+    }
+
     /** Probe every in-memory plugin with a common search; async, results land in health.json. */
     fun startHealthCheck(): Boolean {
         loadHealth()
@@ -490,19 +523,7 @@ object Repos {
                         launch {
                             sem.acquire()
                             try {
-                                val t0 = System.currentTimeMillis()
-                                val entry = HealthEntry(status = "down", lastCheck = System.currentTimeMillis())
-                                try {
-                                    withTimeout(14000) {
-                                        val provs = providersOf(info)
-                                        val anyOk = provs.any { p ->
-                                            runCatching { p.search("inception", 1); true }.getOrDefault(false)
-                                        }
-                                        if (anyOk) { entry.status = "up"; entry.lastOk = System.currentTimeMillis() }
-                                    }
-                                } catch (_: Exception) {}
-                                entry.ms = System.currentTimeMillis() - t0
-                                health[info.internalName] = entry
+                                health[info.internalName] = probe(info)
                             } finally {
                                 sem.release()
                             }
