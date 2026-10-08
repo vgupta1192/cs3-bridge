@@ -289,8 +289,11 @@ object Repos {
         }
     }
 
-    /** Names enabled in any saved install — loaded eagerly after a sync so the first tap is fast. */
-    private fun wantedNames(): Set<String> = Installs.all().flatMap { cfg ->
+    /** Names enabled in installs that streamed in the last 7 days — loaded eagerly
+     *  after a sync so their first tap is fast. Every saved record used to count:
+     *  one 420-source record from the configure page kept ~430 plugins in memory
+     *  and pushed the VPS into swap. Other installs load their plugins on first use. */
+    private fun wantedNames(): Set<String> = Installs.recentlyUsed(7L * 24 * 3600 * 1000).flatMap { cfg ->
         (cfg["p"] as? Map<*, *>)?.filterValues { (it as? Number)?.toInt() != 0 }?.keys?.map { it.toString() } ?: emptyList()
     }.toSet()
 

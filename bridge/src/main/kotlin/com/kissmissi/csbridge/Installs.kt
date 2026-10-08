@@ -36,6 +36,16 @@ object Installs {
      */
     fun fingerprint(id: String): String = sha256(load(id) ?: "seg:$id").take(16)
 
+    /** Saved install configs that served a stream in the last [withinMs] (Warmer's `used:<fp>` rows). */
+    fun recentlyUsed(withinMs: Long): List<Map<String, Any?>> = runCatching {
+        val used = Store.listPrefix("used:", withinMs).map { it.first.removePrefix("used:") }.toSet()
+        dir.listFiles { f -> f.name.endsWith(".json") }?.mapNotNull { f ->
+            val raw = runCatching { f.readText() }.getOrNull() ?: return@mapNotNull null
+            if (sha256(raw).take(16) !in used) return@mapNotNull null
+            runCatching { mapper.readValue<Map<String, Any?>>(raw) }.getOrNull()
+        } ?: emptyList()
+    }.getOrDefault(emptyList())
+
     /** Every saved install config (parsed). */
     fun all(): List<Map<String, Any?>> = runCatching {
         dir.listFiles { f -> f.name.endsWith(".json") }?.mapNotNull { f ->
