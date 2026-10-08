@@ -15,10 +15,19 @@ import org.graalvm.polyglot.Value
  */
 object Formatter {
     private val mapper = jacksonObjectMapper()
-    private val lock = Any()
-
-    @Volatile
-    private var api: Value? = null
+    /**
+     * Two engines: live first answers never queue behind background renders
+     * (warmer, late merges, rescrapes). With one shared engine a warmer batch
+     * held the lock for seconds and a live tap answered after the app had
+     * already timed out (Broken pipe).
+     */
+    private class Engine(val name: String) {
+        val lock = Any()
+        @Volatile var api: Value? = null
+    }
+    private val liveEngine = Engine("live")
+    private val bgEngine = Engine("background")
+    private fun engine(bg: Boolean) = if (bg) bgEngine else liveEngine
 
     data class Templates(val name: String, val description: String)
     data class Rendered(val name: String, val description: String)
@@ -28,43 +37,51 @@ object Formatter {
             ?.readBytes()?.toString(Charsets.UTF_8)
             ?: throw IllegalStateException("missing resource /formatter/$name")
 
-    private fun ensure(): Value {
-        api?.let { return it }
-        synchronized(lock) {
-            api?.let { return it }
+    private val combinedScript: String by lazy {
+        script("csb-prelude.js") + "\n" +
+            script("aiostreams-formatter.js") + "\n" +
+            "var __PENGUPLAY_PRESETS = " + script("penguplay-presets.json") + ";\n" +
+            script("csb-glue.js")
+    }
+
+    private fun ensure(e: Engine): Value {
+        e.api?.let { return it }
+        synchronized(e.lock) {
+            e.api?.let { return it }
             val ctx = Context.newBuilder("js")
                 .option("js.ecmascript-version", "2023")
                 .option("engine.WarnInterpreterOnly", "false")
                 .build()
-            val combined = script("csb-prelude.js") + "\n" +
-                script("aiostreams-formatter.js") + "\n" +
-                "var __PENGUPLAY_PRESETS = " + script("penguplay-presets.json") + ";\n" +
-                script("csb-glue.js")
-            ctx.eval("js", combined)
+            ctx.eval("js", combinedScript)
             val bound = ctx.getBindings("js").getMember("__CSB")
             require(bound != null && !bound.isNull) { "formatter glue did not define __CSB" }
-            api = bound
+            e.api = bound
             return bound
         }
     }
 
+    private fun <T> call(bg: Boolean, block: (Value) -> T): T {
+        val e = engine(bg)
+        return synchronized(e.lock) { block(ensure(e)) }
+    }
+
     /** Resolve a formatter config to templates; null = built-in naming. */
-    fun templates(f: String, n: String?, d: String?): Templates? {
-        val res = synchronized(lock) { ensure().getMember("templates").execute(f, n ?: "", d ?: "") }
+    fun templates(f: String, n: String?, d: String?, bg: Boolean = false): Templates? {
+        val res = call(bg) { it.getMember("templates").execute(f, n ?: "", d ?: "") }
         if (res.isNull) return null
         return mapper.readValue<Templates>(res.asString())
     }
 
     /** Render one stream; meta = raw ExtractorLink fields, the glue parses them. */
     fun render(t: Templates, metaJson: String, ctxJson: String): Rendered {
-        val res = synchronized(lock) { ensure().getMember("render").execute(t.name, t.description, metaJson, ctxJson) }
+        val res = call(false) { it.getMember("render").execute(t.name, t.description, metaJson, ctxJson) }
         return mapper.readValue<Rendered>(res.asString())
     }
 
     /** Render many streams in ONE polyglot hop; null entries = use built-in naming.
      *  Per-serve formatter cost used to scale with stream count (one JS execute each);
      *  fresh answers blew way past the configured response deadline as a result. */
-    fun renderBatch(t: Templates, items: List<Pair<String, String>>): List<Rendered?> {
+    fun renderBatch(t: Templates, items: List<Pair<String, String>>, bg: Boolean = false): List<Rendered?> {
         if (items.isEmpty()) return emptyList()
         // GraalJS runs interpreter-only on a stock JDK, so every render is real
         // CPU. A serve, its late merge and every rescrape re-render mostly the
@@ -78,7 +95,7 @@ object Formatter {
         }
         if (miss.isNotEmpty()) {
             val arr = mapper.writeValueAsString(miss.map { listOf(items[it].first, items[it].second) })
-            val res = synchronized(lock) { ensure().getMember("renderBatch").execute(t.name, t.description, arr).asString() }
+            val res = call(bg) { it.getMember("renderBatch").execute(t.name, t.description, arr).asString() }
             val rendered = mapper.readValue<List<Rendered?>>(res)
             synchronized(memo) {
                 miss.forEachIndexed { j, i ->
@@ -97,14 +114,14 @@ object Formatter {
 
     /** {presets: [{id,label,family,name,description}], fields: {section: [props]}} */
     fun presets(): Map<String, Any?> {
-        val res = synchronized(lock) { ensure().getMember("presets").execute() }
+        val res = call(false) { it.getMember("presets").execute() }
         return mapper.readValue(res.asString())
     }
 
     /** {ok, samples: [{label,name,description}], diagnostics: {name: [], description: []}} */
     fun preview(name: String, description: String): Map<String, Any?> {
-        val samples = synchronized(lock) { ensure().getMember("preview").execute(name, description).asString() }
-        val diag = synchronized(lock) { ensure().getMember("validate").execute(name, description).asString() }
+        val samples = call(false) { it.getMember("preview").execute(name, description).asString() }
+        val diag = call(false) { it.getMember("validate").execute(name, description).asString() }
         return linkedMapOf(
             "ok" to true,
             "samples" to mapper.readValue<List<Map<String, Any?>>>(samples),
@@ -112,9 +129,32 @@ object Formatter {
         )
     }
 
+    /**
+     * Boot: render a realistic batch with every saved install's templates on
+     * both engines. GraalJS runs interpreter-only, so a cold engine took ~8 s
+     * on the first real answer after a restart (past the app's timeout).
+     */
+    fun warmInstalls() {
+        val samples = (1..12).map { i ->
+            val q = listOf(2160, 1080, 720, 480)[i % 4]
+            """{"provider":"Warmup","linkName":"Warmup $q","source":"Server$i","quality":$q,"url":"https://warmup.example/Movie.2024.${q}p.WEB-DL.Hindi.English.x264-$i.mkv","kind":"VIDEO","lang":"hi"}""" to
+                """{"mediaType":"movie","title":"Warmup","year":2024}"""
+        }
+        for (cfg in Installs.all()) {
+            val fmt = FmtCfg.fromRaw(cfg["fmt"])
+            for (bg in listOf(false, true)) runCatching {
+                val t = templates(fmt.f, fmt.n, fmt.d, bg) ?: return@runCatching
+                renderBatch(t, samples, bg)
+            }
+        }
+        // the warm-up samples must not crowd the memo
+        synchronized(memo) { memo.clear() }
+    }
+
     /** Fail-fast at boot (background thread): engine loads and renders. */
     fun warmup() {
         val t = templates("csb-minimal", null, null) ?: throw IllegalStateException("csb-minimal did not resolve")
         render(t, """{"provider":"Warmup","quality":1080,"url":"https://warmup/video.mkv"}""", "{}")
+        renderBatch(t, listOf("""{"provider":"Warmup","quality":720,"url":"https://warmup/v2.mkv"}""" to "{}"), bg = true)
     }
 }

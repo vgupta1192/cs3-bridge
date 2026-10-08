@@ -38,6 +38,8 @@ object Cfg {
     val warmWave: Int = System.getenv("CSBRIDGE_WARM_WAVE")?.toIntOrNull() ?: 20
     val warmGroup: Int = System.getenv("CSBRIDGE_WARM_GROUP")?.toIntOrNull() ?: 3
     val warmConcurrency: Int = System.getenv("CSBRIDGE_WARM_CONCURRENCY")?.toIntOrNull() ?: 2
+    // collection stops this long before the response deadline, leaving time to format
+    val renderHeadroomMs: Long = System.getenv("CSBRIDGE_RENDER_HEADROOM_MS")?.toLongOrNull() ?: 2500L
     // process-wide caps on concurrent provider scrapes (all live requests / the warmer)
     val globalMaxConcurrent: Int = System.getenv("CSBRIDGE_GLOBAL_MAX_CONCURRENT")?.toIntOrNull() ?: 32
     val warmGlobalMaxConcurrent: Int = System.getenv("CSBRIDGE_WARM_GLOBAL_MAX_CONCURRENT")?.toIntOrNull() ?: 8

@@ -574,7 +574,9 @@ object Streams {
 
     private fun streamsForInternal(cfg: BridgeConfig, kind: String, id: String, cacheKey: String?, respond: Boolean, warm: Boolean = false): List<Map<String, Any?>> {
         val t0 = System.currentTimeMillis()
-        val deadline = cfg.deadlineMs ?: Cfg.deadlineMs
+        // stop collecting a little before the configured deadline: formatting
+        // the answer still has to fit before the app gives up on the request
+        val deadline = ((cfg.deadlineMs ?: Cfg.deadlineMs) - Cfg.renderHeadroomMs).coerceAtLeast(5000L)
         val priority = priorityLabels(cfg)
         val channel = Channel<Triple<String, String?, List<ExtractorLink>>>(Channel.UNLIMITED)
         val collected = ArrayList<Triple<String, String?, List<ExtractorLink>>>()
@@ -624,7 +626,10 @@ object Streams {
             return emptyList()
         }
 
-        val result = buildResult(cfg, collected, ctxRef.get())
+        val tb = System.currentTimeMillis()
+        val result = buildResult(cfg, collected, ctxRef.get(), bg = !respond)
+        val buildMs = System.currentTimeMillis() - tb
+        if (buildMs > 1500) AppLogger.i("Streams: $kind/$id formatting took $buildMs ms")
         AppLogger.i("Streams: $kind/$id -> ${result.size} streams in ${System.currentTimeMillis() - t0} ms (scrape complete=${parent.isCompleted})")
 
         if (cacheKey != null && respond) {
@@ -653,7 +658,7 @@ object Streams {
                         synchronized(collected) { collected.add(got) }
                     }
                     withTimeoutOrNull(5_000) { parent.join() }
-                    val full = dropDead(buildResult(cfg, collected, ctxRef.get()))
+                    val full = dropDead(buildResult(cfg, collected, ctxRef.get(), bg = true))
                     if (full.isNotEmpty() || respond) {
                         // a 30s lull can break the loop while the parent scrape is
                         // still running - keep the incomplete flag honest so the
@@ -668,10 +673,10 @@ object Streams {
         return result
     }
 
-    private fun buildResult(cfg: BridgeConfig, collected: List<Triple<String, String?, List<ExtractorLink>>>, ctx: FmtCtx?): List<Map<String, Any?>> {
+    private fun buildResult(cfg: BridgeConfig, collected: List<Triple<String, String?, List<ExtractorLink>>>, ctx: FmtCtx?, bg: Boolean = false): List<Map<String, Any?>> {
         data class Row(val stream: Map<String, Any?>, val label: String, val lang: String?, val link: ExtractorLink)
         // one templates lookup per serve; null = built-in naming everywhere
-        val templates = runCatching { Formatter.templates(cfg.fmt.f, cfg.fmt.n, cfg.fmt.d) }.getOrNull()
+        val templates = runCatching { Formatter.templates(cfg.fmt.f, cfg.fmt.n, cfg.fmt.d, bg) }.getOrNull()
         val rank = cfg.order.withIndex().associate { it.value.lowercase() to it.index }
         data class Cand(val label: String, val lang: String?, val link: ExtractorLink)
         val candidates = ArrayList<Cand>()
@@ -697,7 +702,7 @@ object Streams {
                 }
             }
             if (items.isNotEmpty()) {
-                val rendered = runCatching { Formatter.renderBatch(templates, items) }.getOrElse { emptyList() }
+                val rendered = runCatching { Formatter.renderBatch(templates, items, bg) }.getOrElse { emptyList() }
                 rendered.forEachIndexed { j, r -> formatted[idx[j]] = r }
             }
         }

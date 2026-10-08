@@ -19,6 +19,10 @@ fun main() {
     Thread {
         runCatching { Formatter.warmup() }
             .onFailure { AppLogger.e("formatter warmup failed: ${it.message}") }
+        val t0 = System.currentTimeMillis()
+        runCatching { Formatter.warmInstalls() }
+            .onFailure { AppLogger.e("formatter install warmup failed: ${it.message}") }
+        AppLogger.i("formatter warm in ${System.currentTimeMillis() - t0} ms")
     }.apply { isDaemon = true; name = "formatter-warmup" }.start()
     Thread {
         while (true) {
