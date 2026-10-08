@@ -431,7 +431,7 @@ const UNB64 = s => decodeURIComponent(escape(atob(s.replace(/-/g,'+').replace(/_
 const THEMES = ['slate','charcoal','navy','forest','light'];
 // providers that returned links most often in live tests (2026-10-08) — a
 // lean default; enabling hundreds of sources loads them all into memory
-const DEV_CHOICE = ['FourKHDHub','HDhub4u','MovieBoxProviderIN','CastleTvProvider','AllMovieLandProvider','CineStream','OttSource','UHDmoviesProvider','Moviesmod','Hindmoviez','CNC Verse','CNC Verse Mobile','OneTouchTV','Bollyflix','VegaMovies','DudeFilms','StreamFlixProvider','KisskhProvider'];
+const DEV_CHOICE = ['StreamMaster','FourKHDHub','HDhub4u','MovieBoxProviderIN','CastleTvProvider','AllMovieLandProvider','CineStream','OttSource','UHDmoviesProvider','Moviesmod','Hindmoviez','CNC Verse','CNC Verse Mobile','OneTouchTV','Bollyflix','VegaMovies','DudeFilms','StreamFlixProvider','KisskhProvider'];
 try { const s = localStorage.getItem('csb_state2'); if (s) state = Object.assign(state, JSON.parse(s)); } catch(e) {}
 if (!Array.isArray(state.lg)) state.lg = [];
 if (!Array.isArray(state.co)) state.co = [];
@@ -896,7 +896,9 @@ function renderRepos() {
       if (!confirm('Remove repo ' + repo.name + ' and stop syncing its plugins?')) return;
       fetch('/api/repos/remove?url=' + encodeURIComponent(repo.url)).then(r => r.json()).then(d => { document.getElementById('addMsg').textContent = d.message; poll(); });
     };
-    div.append(gh, rm); rc.append(div);
+    // the virtual Stream Master repo is built in: no GitHub page, not removable
+    if (repo.url.indexOf('local://') !== 0) div.append(gh, rm);
+    rc.append(div);
   });
   document.getElementById('repoCount').textContent = (DATA.repos||[]).length + ' repos';
 }

@@ -125,6 +125,11 @@ object HttpApi {
             "health" -> {
                 // ?name=<internalName> = check just that provider, answered when done
                 qp["name"]?.takeIf { it.isNotBlank() }?.let { name ->
+                    if (name == StreamMaster.INTERNAL && StreamMaster.enabled) {
+                        val h = StreamMaster.check()
+                        return sendJson(ex, 200, mapOf("ok" to true, "internalName" to name, "health" to h.status,
+                            "lastOk" to h.lastOk, "lastCheck" to h.lastCheck, "ms" to h.ms, "loaded" to true, "error" to null))
+                    }
                     val r = Repos.checkOne(name) ?: return sendJson(ex, 404, mapOf("ok" to false, "error" to "unknown provider"))
                     val (info, h) = r
                     return sendJson(ex, 200, mapOf("ok" to true, "internalName" to info.internalName, "health" to h.status,
@@ -200,6 +205,33 @@ object HttpApi {
     }
 
 
+    /** Virtual repo holding the Stream Master source (StreamMaster.kt). */
+    private fun streamMasterRepo(): List<Map<String, Any?>> {
+        if (!StreamMaster.enabled) return emptyList()
+        val h = StreamMaster.healthEntry().let { if (System.currentTimeMillis() - it.lastCheck > 10 * 60_000) StreamMaster.check() else it }
+        return listOf(linkedMapOf(
+            "name" to StreamMaster.REPO,
+            "url" to StreamMaster.REPO_URL,
+            "description" to "The stack's Stream Master addon as one source: 25 providers, link-checked, served from its warm cache",
+            "plugins" to listOf(linkedMapOf(
+                "internalName" to StreamMaster.INTERNAL,
+                "name" to StreamMaster.NAME,
+                "description" to "TopMovies, EonMovies, Cinejoy, VidSpark, GokuHD, CineVood, LuxMovies, KatMovieFix, TokyoInsider, DramaNitam, AnimeNitam, DramaVerse, KatMovies + 4KHDHub, HDHub4u, Vega, MoviesDrive, KissKH ... (only links that really play)",
+                "version" to 1,
+                "iconUrl" to null,
+                "language" to "hi",
+                "tvTypes" to listOf("Movie", "TvSeries", "Anime", "AsianDrama"),
+                "loaded" to true,
+                "active" to true,
+                "error" to null,
+                "providers" to listOf(StreamMaster.NAME),
+                "health" to h.status,
+                "lastOk" to h.lastOk,
+                "lastCheck" to h.lastCheck,
+            )),
+        ))
+    }
+
     private fun reposJson(): Map<String, Any?> = linkedMapOf(
         "repos" to Repos.loadRepos().map { repo ->
             linkedMapOf(
@@ -228,7 +260,7 @@ object HttpApi {
                         )
                     },
             )
-        },
+        } + streamMasterRepo(),
         "syncing" to Repos.isSyncing(),
         "lastSync" to Repos.lastSyncAt(),
         "healthRunning" to Repos.isHealthRunning(),

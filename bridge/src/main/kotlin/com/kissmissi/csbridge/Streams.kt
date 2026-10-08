@@ -542,6 +542,14 @@ object Streams {
     private val liveGlobal = Semaphore(Cfg.globalMaxConcurrent)
     private val warmGlobal = Semaphore(Cfg.warmGlobalMaxConcurrent)
 
+    /** Foreground scrapes (request not answered yet) waiting for a global slot.
+     *  Tail scrapes (their request already answered) yield to them: a user
+     *  browsing several titles used to get 0 streams on every title after the
+     *  first, because the previous titles' ~35-provider tails held all the
+     *  slots for up to 150 s. */
+    private val fgWaiting = java.util.concurrent.atomic.AtomicInteger(0)
+    private val tailSem = Semaphore(Cfg.tailMaxConcurrent)
+
     /** Live fan-outs currently running (first answer + their background tail). */
     private val liveFanouts = java.util.concurrent.atomic.AtomicInteger(0)
     fun liveBusy() = liveFanouts.get() > 0
@@ -606,11 +614,14 @@ object Streams {
         // resolver failure (no fan-out at all) must not poison the cache with a
         // "complete" empty entry — marked by fetchAll, checked before caching
         val noAttempt = java.util.concurrent.atomic.AtomicBoolean(false)
+        // set once this request has answered: providers that have not started
+        // by then run as low-priority tail scrapes (background calls: from the start)
+        val responded = java.util.concurrent.atomic.AtomicBoolean(!respond)
 
         if (cacheKey != null) activeScrapes[cacheKey] = true
         if (!warm) liveFanouts.incrementAndGet()
         val parent = scrapeScope.launch {
-            fetchAll(cfg, kind, id, channel, ctxRef, noAttempt, warm, priority)
+            fetchAll(cfg, kind, id, channel, ctxRef, noAttempt, warm, priority, responded)
             channel.close()
         }
         parent.invokeOnCompletion {
@@ -641,6 +652,10 @@ object Streams {
                         useful.sumOf { usable(cfg, it.third, it.second) } to useful.map { it.first.lowercase() }.filter { it in priority }.distinct().size
                     }
                     if (pdone >= Cfg.priorityMinProviders && n >= Cfg.priorityMinStreams) break
+                    // past the fast window one top provider with a full page is
+                    // enough (Stream Master's cached answer, typically) - the
+                    // rest merges into the cache for the next tap
+                    if (elapsed >= Cfg.fastWindowMs && pdone >= 1 && n >= Cfg.priorityMinStreams) break
                 }
                 if (elapsed >= Cfg.fastWindowMs) {
                     val (n, provs) = synchronized(collected) {
@@ -652,6 +667,7 @@ object Streams {
             }
         }
 
+        responded.set(true)
         if (noAttempt.get() && collected.isEmpty()) {
             AppLogger.i("Streams: $kind/$id -> resolver failed after ${System.currentTimeMillis() - t0} ms, serving empty uncached")
             return emptyList()
@@ -741,7 +757,12 @@ object Streams {
         // one templates lookup per serve; null = built-in naming everywhere
         val templates = runCatching { Formatter.templates(cfg.fmt.f, cfg.fmt.n, cfg.fmt.d, bg) }.getOrNull()
         val rank = cfg.order.withIndex().associate { it.value.lowercase() to it.index }
-        data class Cand(val label: String, val lang: String?, val link: ExtractorLink)
+        data class Cand(val label: String, val lang: String?, val link: ExtractorLink) {
+            // shown provider name; ranking keeps using label
+            val shown: String get() = if (label == StreamMaster.INTERNAL)
+                (if (link.source.isNotBlank() && link.source != StreamMaster.NAME) "${StreamMaster.NAME} · ${link.source}" else StreamMaster.NAME)
+            else label
+        }
         val candidates = ArrayList<Cand>()
         val seen = HashSet<String>()
         for ((label, lang, links) in collected) {
@@ -761,7 +782,7 @@ object Streams {
             candidates.forEachIndexed { i, cand ->
                 if (cand.link.type != ExtractorLinkType.TORRENT && cand.link.type != ExtractorLinkType.MAGNET && cand.link.url.isNotBlank()) {
                     idx.add(i)
-                    items.add(metaJson(cand.link, cand.label, cand.lang) to ctxJson(ctx))
+                    items.add(metaJson(cand.link, cand.shown, cand.lang) to ctxJson(ctx))
                 }
             }
             if (items.isNotEmpty()) {
@@ -772,9 +793,9 @@ object Streams {
         var rows = ArrayList<Row>()
         candidates.forEachIndexed { i, cand ->
             val st = if (cand.link.type == ExtractorLinkType.TORRENT || cand.link.type == ExtractorLinkType.MAGNET) {
-                toStremioStream(cand.link, cand.label, cfg)
+                toStremioStream(cand.link, cand.shown, cfg)
             } else {
-                formatted[i]?.let { streamFromRendered(it, cand.link, cand.label) } ?: toStremioStream(cand.link, cand.label, cfg)
+                formatted[i]?.let { streamFromRendered(it, cand.link, cand.shown) } ?: toStremioStream(cand.link, cand.shown, cfg)
             } ?: return@forEachIndexed
             rows.add(Row(st, cand.label, cand.lang, cand.link))
         }
@@ -830,6 +851,7 @@ object Streams {
         noAttempt: java.util.concurrent.atomic.AtomicBoolean,
         warm: Boolean = false,
         priority: Set<String> = emptySet(),
+        responded: java.util.concurrent.atomic.AtomicBoolean = java.util.concurrent.atomic.AtomicBoolean(true),
     ) {
         // the warmer gets a smaller lane and shorter provider timeout so it never
         // crowds out a live request
@@ -860,7 +882,21 @@ object Streams {
                     // no new warm provider scrape starts until it is done
                     if (warm) while (liveFanouts.get() > 0) kotlinx.coroutines.delay(1000)
                     val global = if (warm) warmGlobal else liveGlobal
-                    try { global.acquire() } catch (t: Throwable) { if (!lane) sem.release(); throw t }
+                    // tail scrapes never queue in the (FIFO) global semaphore:
+                    // they take a free slot only while no foreground scrape waits
+                    val tail = !warm && responded.get()
+                    try {
+                        if (warm) global.acquire()
+                        else if (tail) {
+                            tailSem.acquire()
+                            try {
+                                while (fgWaiting.get() > 0 || !global.tryAcquire()) kotlinx.coroutines.delay(200)
+                            } catch (t: Throwable) { tailSem.release(); throw t }
+                        } else {
+                            fgWaiting.incrementAndGet()
+                            try { global.acquire() } finally { fgWaiting.decrementAndGet() }
+                        }
+                    } catch (t: Throwable) { if (!lane) sem.release(); throw t }
                     try {
                         val tStart = System.currentTimeMillis()
                         val res = try {
@@ -897,6 +933,7 @@ object Streams {
                         }
                     } finally {
                         global.release()
+                        if (tail) tailSem.release()
                         if (!lane) sem.release()
                     }
                 } catch (_: Throwable) {
@@ -950,6 +987,26 @@ object Streams {
             val imdb = id.substringBefore(":")
             val requestedS = id.split(":").getOrNull(1)?.toIntOrNull()
             val requestedE = id.split(":").getOrNull(2)?.toIntOrNull()
+            // Stream Master: one HTTP call to its (usually warm) cache, started
+            // before title resolution and outside the provider slots - it does
+            // its own scraping in its own container
+            val smJob = if (StreamMaster.enabled && StreamMaster.INTERNAL in cfg.providers && imdb.startsWith("tt")) {
+                attempted.add(StreamMaster.INTERNAL)
+                scrapeScope.launch {
+                    val tStart = System.currentTimeMillis()
+                    try {
+                        val links = withTimeout(Cfg.smTimeoutMs + 2000) { StreamMaster.links(kind, id) }
+                        if (links.isNotEmpty()) {
+                            succeeded.add(StreamMaster.INTERNAL)
+                            okTimes[StreamMaster.INTERNAL] = System.currentTimeMillis() - tStart
+                            channel.send(Triple(StreamMaster.INTERNAL, null, links))
+                        } else noContent.add(StreamMaster.INTERNAL)
+                    } catch (t: Throwable) {
+                        failed.add(StreamMaster.INTERNAL)
+                        errorSamples.putIfAbsent(StreamMaster.INTERNAL, "${t::class.java.simpleName}: ${t.message?.take(120) ?: "no message"}")
+                    }
+                }
+            } else null
             val titleInfo = Resolver.resolve(kind, imdb)
             if (titleInfo == null) {
                 noAttempt.set(true)
@@ -1007,6 +1064,8 @@ object Streams {
                     }
                 }
             }
+            // the channel closes after fetchAll returns: Stream Master must be done
+            smJob?.join()
         }
 
         fanOutSummary(kind, id, "done", attempted, succeeded, noContent, failed, errorSamples)

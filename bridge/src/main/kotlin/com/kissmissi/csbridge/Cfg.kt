@@ -46,6 +46,12 @@ object Cfg {
     val renderHeadroomMs: Long = System.getenv("CSBRIDGE_RENDER_HEADROOM_MS")?.toLongOrNull() ?: 2500L
     // process-wide caps on concurrent provider scrapes (all live requests / the warmer)
     val globalMaxConcurrent: Int = System.getenv("CSBRIDGE_GLOBAL_MAX_CONCURRENT")?.toIntOrNull() ?: 32
+    // of the global cap, at most this many may be "tail" scrapes (providers that
+    // start after their request already answered); new taps always go first
+    val tailMaxConcurrent: Int = System.getenv("CSBRIDGE_TAIL_MAX_CONCURRENT")?.toIntOrNull() ?: 6
+    // Stream Master as a source (StreamMaster.kt); "" disables it
+    val smUrl: String = (System.getenv("CSBRIDGE_SM_URL") ?: "http://stream-master:7050").trimEnd('/')
+    val smTimeoutMs: Long = System.getenv("CSBRIDGE_SM_TIMEOUT_MS")?.toLongOrNull() ?: 30000L
     val warmGlobalMaxConcurrent: Int = System.getenv("CSBRIDGE_WARM_GLOBAL_MAX_CONCURRENT")?.toIntOrNull() ?: 8
     val warmMaxConcurrent: Int = System.getenv("CSBRIDGE_WARM_MAX_CONCURRENT")?.toIntOrNull() ?: 12
     val warmProviderTimeoutMs: Long = System.getenv("CSBRIDGE_WARM_PROVIDER_TIMEOUT_MS")?.toLongOrNull() ?: 60000L
