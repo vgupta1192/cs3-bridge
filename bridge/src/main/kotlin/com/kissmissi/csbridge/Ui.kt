@@ -372,8 +372,12 @@ textarea.tpl.small { min-height:64px; }
 </div>
 <script>
 let DATA = null;
-let state = { p: {}, c: true, m: false, d: 25000, q: { on: [2160,1080,720,480,360], tier: 0, cam: 0 }, f: 'builtin', n: '', d: '', order: [] };
+// dl = search deadline; d = formatter description template. They used to share
+// one key (state.d) — editing the deadline clobbered the description and the
+// deadline itself never reached the generated URL
+let state = { p: {}, c: true, m: false, dl: 25000, q: { on: [2160,1080,720,480,360], tier: 0, cam: 0 }, f: 'builtin', n: '', d: '', order: [] };
 const B64 = s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const UNB64 = s => decodeURIComponent(escape(atob(s.replace(/-/g,'+').replace(/_/g,'/') + '='.repeat((4 - s.length % 4) % 4))));
 const THEMES = ['slate','charcoal','navy','forest'];
 try { const s = localStorage.getItem('csb_state2'); if (s) state = Object.assign(state, JSON.parse(s)); } catch(e) {}
 // migrate the pre-AIOStreams formatter keys to the preset/custom scheme
@@ -392,6 +396,41 @@ try { const s = localStorage.getItem('csb_state2'); if (s) state = Object.assign
   }
   if (!state.f) state.f = 'builtin';
   if (state.f === 'custom' && !state.n && !state.d) state.f = 'builtin';
+  // deadline/description split: an old numeric state.d was the deadline
+  if (typeof state.d === 'number' || (typeof state.d === 'string' && /^\d+$/.test(state.d))) { state.dl = parseInt(state.d); state.d = ''; }
+  if (!state.dl) state.dl = 25000;
+})();
+// opened as /<config>/configure (Nuvio's Configure button): import the URL's
+// config so the page shows the installed selection instead of localStorage
+(function importUrlCfg() {
+  const m = location.pathname.match(/^\/([A-Za-z0-9_-]+)\/configure\/?$/);
+  if (!m) return;
+  try {
+    const cfg = JSON.parse(UNB64(m[1]));
+    if (!cfg || typeof cfg !== 'object' || !cfg.p || typeof cfg.p !== 'object') return;
+    const p = {};
+    Object.keys(cfg.p).forEach(k => { if (cfg.p[k]) p[k] = 1; });
+    state.p = p;
+    if (cfg.c !== undefined) state.c = cfg.c == 1;
+    if (cfg.m !== undefined) state.m = cfg.m == 1;
+    if (typeof cfg.d === 'number') state.dl = cfg.d;
+    if (cfg.q) {
+      if (Array.isArray(cfg.q.on) && cfg.q.on.length) state.q.on = cfg.q.on.map(Number).filter(n => n > 0);
+      if (cfg.q.tier !== undefined) state.q.tier = Number(cfg.q.tier) || 0;
+      if (cfg.q.cam !== undefined) state.q.cam = cfg.q.cam == 1 ? 1 : 0;
+    }
+    if (Array.isArray(cfg.order)) state.order = cfg.order.filter(x => typeof x === 'string');
+    if (typeof cfg.fmt === 'string') {
+      if (cfg.fmt === 'modern') state.f = 'csb-modern';
+      else if (cfg.fmt === 'minimal') state.f = 'csb-minimal';
+      else if (cfg.fmt.startsWith('custom:')) { const parts = cfg.fmt.slice(7).split('|'); state.f = 'custom'; state.n = parts[0] || ''; state.d = parts[1] || ''; }
+    } else if (cfg.fmt && typeof cfg.fmt === 'object') {
+      if (cfg.fmt.f) state.f = String(cfg.fmt.f);
+      if (typeof cfg.fmt.n === 'string') state.n = cfg.fmt.n;
+      if (typeof cfg.fmt.d === 'string') state.d = cfg.fmt.d;
+    }
+    save();
+  } catch(e) {}
 })();
 document.documentElement.dataset.baseTheme = localStorage.getItem('csb_theme') || 'slate';
 document.getElementById('themeLabel').textContent = 'Theme: ' + document.documentElement.dataset.baseTheme.charAt(0).toUpperCase() + document.documentElement.dataset.baseTheme.slice(1);
@@ -420,25 +459,35 @@ function gen() {
   delete cfg.fmt; delete cfg.fmtName; delete cfg.fmtTitle;
   if (state.f === 'custom') cfg.fmt = { f: 'custom', n: state.n || '', d: state.d || '' };
   else if (state.f && state.f !== 'builtin') cfg.fmt = { f: state.f };
+  if (state.dl) cfg.d = state.dl;
   const url = location.origin + '/' + B64(JSON.stringify(cfg)) + '/manifest.json';
   document.getElementById('murl').value = url;
 }
 
 // ---------- HOME ----------
+function filterState() {
+  return {
+    q: document.getElementById('filter').value.toLowerCase(),
+    repo: document.getElementById('f-repo').value,
+    lang: document.getElementById('f-lang').value,
+    hideDead: document.getElementById('f-dead').checked,
+    hideFailed: document.getElementById('f-failed').checked,
+  };
+}
+function isVisible(p, fs) {
+  if (fs.q && !(p.name+' '+p.internalName+' '+(p.description||'')).toLowerCase().includes(fs.q)) return false;
+  if (fs.repo && (!repoOf(p) || repoOf(p).name !== fs.repo)) return false;
+  if (fs.lang && (p.language||'') !== fs.lang) return false;
+  if (fs.hideDead && p.loaded && p.health === 'down') return false;
+  if (fs.hideFailed && !p.loaded) return false;
+  return true;
+}
+function visiblePlugins(){ const fs = filterState(); return allPlugins().filter(p => isVisible(p, fs)); }
 function renderGrid() {
   const root = document.getElementById('grid');
-  const q = document.getElementById('filter').value.toLowerCase();
-  const fRepo = document.getElementById('f-repo').value;
-  const fLang = document.getElementById('f-lang').value;
-  const hideDead = document.getElementById('f-dead').checked;
-  const hideFailed = document.getElementById('f-failed').checked;
+  const fs = filterState();
   root.innerHTML = '';
-  allPlugins().forEach(p => {
-    if (q && !(p.name+' '+p.internalName+' '+(p.description||'')).toLowerCase().includes(q)) return;
-    if (fRepo && (!repoOf(p) || repoOf(p).name !== fRepo)) return;
-    if (fLang && (p.language||'') !== fLang) return;
-    if (hideDead && p.loaded && p.health === 'down') return;
-    if (hideFailed && !p.loaded) return;
+  visiblePlugins().forEach(p => {
     const row = document.createElement('div');
     row.className = 'prov' + (state.p[p.internalName] ? ' on' : '');
     const chips = (p.tvTypes||[]).slice(0,3).map(t => '<span class="chip">'+esc(t)+'</span>').join('')
@@ -482,7 +531,7 @@ function renderFiltersPage() {
   document.getElementById('opt-tier').value = String(state.q.tier || 0);
   document.getElementById('opt-cam').checked = !!state.q.cam;
   document.getElementById('opt-m').checked = !!state.m;
-  document.getElementById('opt-d').value = String(state.d || 25000);
+  document.getElementById('opt-d').value = String(state.dl || 25000);
 }
 // ---------- formatter (AIOStreams engine, presets + custom + preview) ----------
 let PRESETS = [];
@@ -587,6 +636,12 @@ document.getElementById('bJsonApply').onclick = () => {
     save(); markFmtChips(); gen(); schedulePreview();
   } catch(e) { document.getElementById('jsonErr').textContent = 'Could not import: ' + e.message; }
 };
+let healthFilter = 'all';
+document.querySelectorAll('[data-hf]').forEach(b => b.onclick = () => {
+  healthFilter = b.dataset.hf;
+  document.querySelectorAll('[data-hf]').forEach(x => x.classList.toggle('sel', x === b));
+  renderStatus();
+});
 function renderStatus() {
   const all = allPlugins();
   document.getElementById('hs-total').textContent = all.length;
@@ -596,8 +651,14 @@ function renderStatus() {
   document.getElementById('syncLine').textContent = DATA.syncing ? 'syncing…' : (DATA.healthRunning ? 'health check running…' : ('last sync ' + new Date(DATA.lastSync).toLocaleTimeString()));
   document.getElementById('statusRows').innerHTML = '';
   allPlugins().sort((a,b) => (a.loaded===b.loaded) ? a.internalName.localeCompare(b.internalName) : (a.loaded?1:-1)).forEach(p => {
-    const tr = document.createElement('tr');
     const h = p.health || 'unchecked';
+    // load-failed plugins count as unchecked (they never got a health verdict)
+    const match = healthFilter === 'all'
+      || (healthFilter === 'up' && p.loaded && h === 'up')
+      || (healthFilter === 'down' && p.loaded && h === 'down')
+      || (healthFilter === 'unchecked' && (!p.loaded || (h !== 'up' && h !== 'down')));
+    if (!match) return;
+    const tr = document.createElement('tr');
     const cls = h === 'up' ? 'st-ok' : (h === 'down' ? 'st-err' : 'st-unk');
     const label = !p.loaded ? 'load failed' : (h === 'up' ? 'UP' : (h === 'down' ? 'DOWN' : 'unchecked'));
     const ago = p.lastOk ? ' · worked ' + agoStr(p.lastOk) : '';
@@ -645,12 +706,15 @@ document.getElementById('f-repo').onchange = renderGrid;
 document.getElementById('f-lang').onchange = renderGrid;
 document.getElementById('f-dead').onchange = renderGrid;
 document.getElementById('f-failed').onchange = renderGrid;
-document.getElementById('all-on').onclick = () => { allPlugins().filter(p => p.loaded).forEach(p => state.p[p.internalName] = 1); save(); renderAll(); };
+// Enable all / presets only enable what passes the active filters (Hide dead,
+// Hide load-failed, repo/language/search) — enabling everything including the
+// dead ones made every stream request fan out to 420+ providers
+document.getElementById('all-on').onclick = () => { visiblePlugins().forEach(p => state.p[p.internalName] = 1); save(); renderAll(); };
 document.getElementById('all-off').onclick = () => { state.p = {}; save(); renderAll(); };
 document.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => {
   const preset = b.dataset.preset;
   state.p = {};
-  allPlugins().filter(p => p.loaded).forEach(p => {
+  visiblePlugins().forEach(p => {
     const t = (p.tvTypes||[]).join(',');
     if (preset === 'movies' && /Movie|TvSeries|AsianDrama|Documentary/.test(t)) state.p[p.internalName] = 1;
     if (preset === 'anime' && /Anime|Cartoon|OVA/.test(t)) state.p[p.internalName] = 1;
@@ -668,7 +732,7 @@ document.getElementById('opt-tier').onchange = e => { state.q.tier = parseInt(e.
 document.getElementById('opt-cam').onchange = e => { state.q.cam = e.target.checked ? 1 : 0; save(); gen(); };
 document.getElementById('opt-c').onchange = e => { state.c = e.target.checked; save(); gen(); };
 document.getElementById('opt-m').onchange = e => { state.m = e.target.checked; save(); gen(); };
-document.getElementById('opt-d').onchange = e => { state.d = parseInt(e.target.value); save(); gen(); };
+document.getElementById('opt-d').onchange = e => { state.dl = parseInt(e.target.value); save(); gen(); };
 document.getElementById('order-reset').onclick = () => { state.order = []; save(); renderFiltersPage(); gen(); };
 document.getElementById('resync').onclick = () => {
   const b = document.getElementById('resync'); b.disabled = true; b.innerHTML = '<span class="spin"></span> syncing…';
@@ -696,7 +760,9 @@ async function boot() {
   document.getElementById('syncLine').innerHTML = '<span class="spin"></span> loading…';
   try {
     const r = await fetch('/api/repos'); DATA = await r.json();
-    allPlugins().forEach(p => { if (!(p.internalName in state.p) && p.loaded) state.p[p.internalName] = 1; });
+    // first-visit default: enable loaded, non-dead plugins (all 420 incl. the
+    // dead ones was the old default and made every request fan out uselessly)
+    allPlugins().forEach(p => { if (!(p.internalName in state.p) && p.loaded && p.health !== 'down') state.p[p.internalName] = 1; });
     // populate repo + language filters
     const fr = document.getElementById('f-repo');
     (DATA.repos||[]).forEach(r2 => { const o = document.createElement('option'); o.value = r2.name; o.textContent = r2.name; fr.append(o); });

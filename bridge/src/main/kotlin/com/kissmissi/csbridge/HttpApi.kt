@@ -79,6 +79,10 @@ object HttpApi {
             segs[0] == "api" && segs.size > 1 -> api(ex, segs)
             segs[0] == "manifest.json" -> sendJson(ex, 200, manifest(BridgeConfig.decode("")))
             segs.size >= 2 && segs[1] == "manifest.json" -> sendJson(ex, 200, manifest(BridgeConfig.decode(segs[0])))
+            // Nuvio's Configure button appends /configure to the installed
+            // manifest URL — serve the same config page (the JS imports the
+            // URL's config segment so the user's selections are preloaded)
+            segs.size >= 2 && segs[1] == "configure" -> sendHtml(ex, Ui.page())
             segs.size >= 4 && segs[1] == "stream" -> stream(ex, segs)
             segs.size >= 4 && segs[1] == "catalog" -> catalog(ex, segs)
             segs.size >= 4 && segs[1] == "meta" -> meta(ex, segs)

@@ -9,6 +9,11 @@ object Cfg {
     val deadlineMs: Long = System.getenv("CSBRIDGE_DEADLINE_MS")?.toLongOrNull() ?: 28000L
     val providerTimeoutMs: Long = System.getenv("CSBRIDGE_PROVIDER_TIMEOUT_MS")?.toLongOrNull() ?: 120000L
     val maxConcurrent: Int = System.getenv("CSBRIDGE_MAX_CONCURRENT")?.toIntOrNull() ?: 48
+    // fast-first: answering only at the full deadline made apps (and users) give up
+    // before the response landed; once this much has elapsed AND this many links
+    // are collected, serve the partial and let stragglers merge into the cache
+    val fastWindowMs: Long = System.getenv("CSBRIDGE_FAST_WINDOW_MS")?.toLongOrNull() ?: 6000L
+    val fastMinStreams: Int = System.getenv("CSBRIDGE_FAST_MIN_STREAMS")?.toIntOrNull() ?: 10
     // degraded-cache self-heal: cached entries with fewer streams than this get one
     // background rescrape per rescrapeMinAgeMs when requested (an entry written during
     // a provider rate-limit window used to serve its thin result as final for 6h)

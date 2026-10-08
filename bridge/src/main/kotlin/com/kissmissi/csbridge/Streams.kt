@@ -360,10 +360,13 @@ object Streams {
         val channel = Channel<Pair<String, List<ExtractorLink>>>(Channel.UNLIMITED)
         val collected = ArrayList<Pair<String, List<ExtractorLink>>>()
         val ctxRef = java.util.concurrent.atomic.AtomicReference<FmtCtx?>(null)
+        // resolver failure (no fan-out at all) must not poison the cache with a
+        // "complete" empty entry — marked by fetchAll, checked before caching
+        val noAttempt = java.util.concurrent.atomic.AtomicBoolean(false)
 
         if (cacheKey != null) activeScrapes[cacheKey] = true
         val parent = scrapeScope.launch {
-            fetchAll(cfg, kind, id, channel, ctxRef)
+            fetchAll(cfg, kind, id, channel, ctxRef, noAttempt)
             channel.close()
         }
         parent.invokeOnCompletion { if (cacheKey != null) activeScrapes.remove(cacheKey) }
@@ -375,7 +378,19 @@ object Streams {
                 val r = withTimeoutOrNull(remaining) { channel.receiveCatching() } ?: break
                 val got = r.getOrNull() ?: break
                 synchronized(collected) { collected.add(got) }
+                // fast-first: a useful partial beats the full wait — apps time out
+                // around 15-30 s, so waiting the whole deadline served empty pages
+                val elapsed = System.currentTimeMillis() - start
+                if (elapsed >= Cfg.fastWindowMs) {
+                    val n = synchronized(collected) { collected.sumOf { it.second.size } }
+                    if (n >= Cfg.fastMinStreams) break
+                }
             }
+        }
+
+        if (noAttempt.get() && collected.isEmpty()) {
+            AppLogger.i("Streams: $kind/$id -> resolver failed after ${System.currentTimeMillis() - t0} ms, serving empty uncached")
+            return emptyList()
         }
 
         val result = buildResult(cfg, collected, ctxRef.get())
@@ -472,6 +487,7 @@ object Streams {
         id: String,
         channel: Channel<Pair<String, List<ExtractorLink>>>,
         ctxRef: java.util.concurrent.atomic.AtomicReference<FmtCtx?>,
+        noAttempt: java.util.concurrent.atomic.AtomicBoolean,
     ) {
         val sem = Semaphore(Cfg.maxConcurrent)
         val attempted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
@@ -560,6 +576,7 @@ object Streams {
             val requestedE = id.split(":").getOrNull(2)?.toIntOrNull()
             val titleInfo = Resolver.resolve(kind, imdb)
             if (titleInfo == null) {
+                noAttempt.set(true)
                 AppLogger.i("Streams: could not resolve $kind/$imdb")
             } else {
                 ctxRef.set(FmtCtx(kind, requestedS, requestedE, titleInfo.name, titleInfo.year))

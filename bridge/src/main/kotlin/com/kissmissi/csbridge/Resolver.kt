@@ -12,6 +12,7 @@ data class TitleInfo(val name: String, val year: Int?, val type: String, val imd
 object Resolver {
     private val mapper = jacksonObjectMapper()
     private const val RESOLVE_TTL = 7L * 24 * 3600 * 1000
+    private const val FAIL_TTL = 10L * 60 * 1000
 
     // figure out movie/series type from the requested path segment
     private fun metaUrl(kind: String, imdb: String) =
@@ -20,8 +21,13 @@ object Resolver {
     suspend fun resolve(kind: String, imdb: String): TitleInfo? {
         val key = "resolve:$kind:$imdb"
         Store.get(key, RESOLVE_TTL)?.let { return runCatching { mapper.readValue<TitleInfo>(it) }.getOrNull() }
+        // short negative cache: a Cinemeta+TMDB outage otherwise re-fetches both
+        // on every tap; recovered resolves need to be picked up quickly, so this
+        // is minutes, not the 7-day success TTL
+        val failKey = "resolve-fail:$kind:$imdb"
+        if (Store.get(failKey, FAIL_TTL) != null) return null
         val info = fetch(kind, imdb)
-        if (info != null) Store.put(key, mapper.writeValueAsString(info))
+        if (info != null) Store.put(key, mapper.writeValueAsString(info)) else Store.put(failKey, "1")
         return info
     }
 
