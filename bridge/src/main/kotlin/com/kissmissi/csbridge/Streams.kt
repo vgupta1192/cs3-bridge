@@ -631,11 +631,20 @@ object Streams {
 
         runBlocking {
             val start = System.currentTimeMillis()
+            // usable-link count per collected result, computed once on arrival
+            // (the loop below re-checks its rules every 250 ms)
+            val usableByLabel = ArrayList<Pair<String, Int>>()
             while (System.currentTimeMillis() - start < deadline) {
                 val remaining = deadline - (System.currentTimeMillis() - start)
-                val r = withTimeoutOrNull(remaining) { channel.receiveCatching() } ?: break
-                val got = r.getOrNull() ?: break
-                synchronized(collected) { collected.add(got) }
+                // short waits: the time-based rules below must fire even when
+                // no new provider answers (Stream Master answers in ~1 s, the
+                // next CloudStream result can be 20 s away)
+                val r = withTimeoutOrNull(minOf(remaining, 250L)) { channel.receiveCatching() }
+                if (r != null) {
+                    val got = r.getOrNull() ?: break
+                    synchronized(collected) { collected.add(got) }
+                    usable(cfg, got.third, got.second).takeIf { it > 0 }?.let { usableByLabel.add(got.first to it) }
+                }
                 // fast-first: a useful partial beats the full wait — apps time out
                 // around 15-30 s, so waiting the whole deadline served empty pages.
                 // Both gates count: enough links AND enough distinct providers
@@ -647,21 +656,17 @@ object Streams {
                     // count only links that survive this install's filters
                     // (torrents off, quality tiers, cam, language) — raw link
                     // counts sent early answers that filtered down to 0 streams
-                    val (n, pdone) = synchronized(collected) {
-                        val useful = collected.filter { usable(cfg, it.third, it.second) > 0 }
-                        useful.sumOf { usable(cfg, it.third, it.second) } to useful.map { it.first.lowercase() }.filter { it in priority }.distinct().size
-                    }
+                    val n = usableByLabel.sumOf { it.second }
+                    val pdone = usableByLabel.map { it.first.lowercase() }.filter { it in priority }.distinct().size
                     if (pdone >= Cfg.priorityMinProviders && n >= Cfg.priorityMinStreams) break
                     // past the fast window one top provider with a full page is
                     // enough (Stream Master's cached answer, typically) - the
                     // rest merges into the cache for the next tap
-                    if (elapsed >= Cfg.fastWindowMs && pdone >= 1 && n >= Cfg.priorityMinStreams) break
+                    if (elapsed >= Cfg.soloMinMs && pdone >= 1 && n >= Cfg.priorityMinStreams) break
                 }
                 if (elapsed >= Cfg.fastWindowMs) {
-                    val (n, provs) = synchronized(collected) {
-                        val useful = collected.filter { usable(cfg, it.third, it.second) > 0 }
-                        useful.sumOf { usable(cfg, it.third, it.second) } to useful.map { it.first }.distinct().size
-                    }
+                    val n = usableByLabel.sumOf { it.second }
+                    val provs = usableByLabel.map { it.first }.distinct().size
                     if (n >= Cfg.fastMinStreams && provs >= Cfg.fastMinProviders) break
                 }
             }

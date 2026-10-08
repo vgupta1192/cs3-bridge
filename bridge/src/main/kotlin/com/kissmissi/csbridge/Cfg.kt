@@ -27,6 +27,8 @@ object Cfg {
     val priorityCount: Int = System.getenv("CSBRIDGE_PRIORITY_COUNT")?.toIntOrNull() ?: 8
     val priorityMinProviders: Int = System.getenv("CSBRIDGE_PRIORITY_MIN_PROVIDERS")?.toIntOrNull() ?: 2
     val priorityMinStreams: Int = System.getenv("CSBRIDGE_PRIORITY_MIN_STREAMS")?.toIntOrNull() ?: 6
+    // one top-ranked provider with a full page answers after this long
+    val soloMinMs: Long = System.getenv("CSBRIDGE_SOLO_MIN_MS")?.toLongOrNull() ?: 4000L
     val priorityMinMs: Long = System.getenv("CSBRIDGE_PRIORITY_MIN_MS")?.toLongOrNull() ?: 2500L
     // stream cache: served up to cacheMaxMs, refreshed in the background once older than cacheStaleMs
     val cacheStaleMs: Long = System.getenv("CSBRIDGE_CACHE_STALE_MS")?.toLongOrNull() ?: (6L * 3600 * 1000)
