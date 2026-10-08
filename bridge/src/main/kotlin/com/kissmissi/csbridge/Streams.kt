@@ -532,17 +532,19 @@ object Streams {
         "hash", "md5", "verify", "policy", "key-pair-id", "hdnts", "x-amz-signature", "x-amz-date", "x-amz-expires",
         "x-amz-credential", "x-amz-security-token", "x-amz-signedheaders", "x-amz-algorithm",
     )
-    private val exactSizeRegex = Regex("""(?i)(\d+[.,]\d+)\s*(GB|GiB|MB|MiB)\b""")
+    private val exactSizeRegex = Regex("""(?iU)(\d+[.,]\d+)\s*(GB|GiB|MB|MiB)\b""")
 
     /** Keys that identify the underlying file; two links sharing any key are duplicates. */
     private fun dupKeys(link: ExtractorLink): List<String> {
         if (link.type == ExtractorLinkType.TORRENT || link.type == ExtractorLinkType.MAGNET) return emptyList()
-        val uri = runCatching { java.net.URI(link.url) }.getOrNull() ?: return emptyList()
         val keys = ArrayList<String>(2)
         // host-free path + file-picking params: pixeldrain.com vs .dev, one
-        // ?file= id behind several workers.dev hosts, re-signed CDN URLs
-        val path = uri.rawPath ?: ""
-        val query = (uri.rawQuery ?: "").split('&')
+        // ?file= id behind several workers.dev hosts, re-signed CDN URLs.
+        // Plain string split: java.net.URI rejects the spaces and brackets in
+        // HubCloud file URLs
+        val rest = link.url.substringAfter("://", "").substringBefore('#')
+        val path = rest.indexOf('/').let { if (it < 0) "" else rest.substring(it) }.substringBefore('?')
+        val query = rest.substringAfter('?', "").split('&')
             .filter { it.isNotBlank() && it.substringBefore('=').lowercase() !in volatileParams }
             .sorted().joinToString("&")
         val pq = if (query.isEmpty()) path else "$path?$query"
