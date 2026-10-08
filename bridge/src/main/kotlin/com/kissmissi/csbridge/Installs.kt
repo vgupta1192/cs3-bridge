@@ -26,7 +26,8 @@ object Installs {
     }.getOrNull()
 
     fun save(id: String, configJson: String): Pair<Boolean, String> {
-        if (id.length > 2200) return false to "install id too long"
+        // real b64 config segments run ~4 KB once big formatter templates are in
+        if (id.length > 8000) return false to "install id too long"
         val root = runCatching { mapper.readTree(configJson) }.getOrNull()
             ?: return false to "config must be valid JSON"
         if (!root.isObject || !root.has("p") || !root.get("p").isObject) return false to "config needs a providers object \"p\""
