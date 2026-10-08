@@ -65,17 +65,106 @@ object Formatter {
         return synchronized(e.lock) { block(ensure(e)) }
     }
 
+    /**
+     * The same bundle under Node (V8 JIT) in a child process: GraalJS on a
+     * stock JDK is interpreter-only, and on this VPS a 49-stream render took
+     * 1.7 s idle and 23 s under swap pressure; V8 renders 50 in 35-90 ms.
+     * GraalJS stays the fallback (no node binary, host crashed, call failed).
+     * CSBRIDGE_FORMATTER=graal forces GraalJS.
+     */
+    private class NodeHost(val name: String) {
+        val lock = Any()
+        private var proc: Process? = null
+        private var writer: java.io.BufferedWriter? = null
+        private var reader: java.io.BufferedReader? = null
+        private var nextId = 1L
+        @Volatile var retryAt = 0L
+
+        private fun start(): Boolean {
+            if (System.currentTimeMillis() < retryAt) return false
+            retryAt = System.currentTimeMillis() + 60_000
+            return try {
+                val dir = java.io.File(Cfg.dataDir, "formatter-node").apply { mkdirs() }
+                for (f in listOf("csb-prelude.js", "aiostreams-formatter.js", "penguplay-presets.json", "csb-glue.js", "node-host.js")) {
+                    java.io.File(dir, f).writeText(script(f))
+                }
+                val p = ProcessBuilder(nodeBin, "--max-old-space-size=96", java.io.File(dir, "node-host.js").path, dir.path)
+                    .redirectError(ProcessBuilder.Redirect.INHERIT).start()
+                val r = p.inputStream.bufferedReader(Charsets.UTF_8)
+                val w = p.outputStream.bufferedWriter(Charsets.UTF_8)
+                val ready = r.readLine()
+                if (ready == null || !ready.contains("ready")) { p.destroyForcibly(); false }
+                else {
+                    proc = p; reader = r; writer = w
+                    com.lagradost.common.logging.AppLogger.i("Formatter: node host '$name' started (pid ${p.pid()})")
+                    true
+                }
+            } catch (t: Throwable) {
+                com.lagradost.common.logging.AppLogger.i("Formatter: node host '$name' unavailable (${t.message}), using GraalJS")
+                false
+            }
+        }
+
+        private fun stop() {
+            runCatching { proc?.destroyForcibly() }
+            proc = null; reader = null; writer = null
+        }
+
+        /** Result string, JS null as Kotlin null; throws when the host failed. */
+        fun invoke(fn: String, args: List<String>): String? = synchronized(lock) {
+            if (proc?.isAlive != true) { stop(); if (!start()) throw IllegalStateException("node host down") }
+            val id = nextId++
+            val p = proc!!
+            // a stuck render must not hold the lock forever: kill the host,
+            // readLine() then returns null and the caller falls back to GraalJS
+            val watchdog = watchdogs.schedule({ p.destroyForcibly() }, 15, java.util.concurrent.TimeUnit.SECONDS)
+            try {
+                writer!!.write(mapper.writeValueAsString(mapOf("id" to id, "fn" to fn, "args" to args)))
+                writer!!.write("\n")
+                writer!!.flush()
+                val line = reader!!.readLine() ?: run { stop(); throw IllegalStateException("node host exited") }
+                val res = mapper.readTree(line)
+                if (!res.path("ok").asBoolean(false)) throw IllegalStateException("node: " + res.path("e").asText(""))
+                val v = res.get("v")
+                if (v == null || v.isNull) null else v.asText()
+            } catch (t: java.io.IOException) {
+                stop(); throw t
+            } finally {
+                watchdog.cancel(false)
+            }
+        }
+    }
+
+    private val nodeBin: String = System.getenv("CSBRIDGE_NODE") ?: "node"
+    private val nodeOn = (System.getenv("CSBRIDGE_FORMATTER") ?: "node") != "graal"
+    private val watchdogs = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "formatter-watchdog").apply { isDaemon = true }
+    }
+    private val liveNode = NodeHost("live")
+    private val bgNode = NodeHost("background")
+
+    /** Call one __CSB function with string args: Node first, GraalJS on failure. */
+    private fun js(bg: Boolean, fn: String, vararg args: String): String? {
+        if (nodeOn) {
+            try {
+                return (if (bg) bgNode else liveNode).invoke(fn, args.toList())
+            } catch (t: Throwable) {
+                if (t.message?.startsWith("node: ") == true) throw t // the script itself failed: same in GraalJS
+            }
+        }
+        return call(bg) { api -> api.getMember(fn).execute(*args).let { if (it.isNull) null else it.asString() } }
+    }
+
     /** Resolve a formatter config to templates; null = built-in naming. */
     fun templates(f: String, n: String?, d: String?, bg: Boolean = false): Templates? {
-        val res = call(bg) { it.getMember("templates").execute(f, n ?: "", d ?: "") }
-        if (res.isNull) return null
-        return mapper.readValue<Templates>(res.asString())
+        val res = js(bg, "templates", f, n ?: "", d ?: "") ?: return null
+        return mapper.readValue<Templates>(res)
     }
 
     /** Render one stream; meta = raw ExtractorLink fields, the glue parses them. */
     fun render(t: Templates, metaJson: String, ctxJson: String): Rendered {
-        val res = call(false) { it.getMember("render").execute(t.name, t.description, metaJson, ctxJson) }
-        return mapper.readValue<Rendered>(res.asString())
+        val res = js(false, "render", t.name, t.description, metaJson, ctxJson)
+        return mapper.readValue<Rendered>(res ?: "null")
     }
 
     /** Render many streams in ONE polyglot hop; null entries = use built-in naming.
@@ -95,7 +184,7 @@ object Formatter {
         }
         if (miss.isNotEmpty()) {
             val arr = mapper.writeValueAsString(miss.map { listOf(items[it].first, items[it].second) })
-            val res = call(bg) { it.getMember("renderBatch").execute(t.name, t.description, arr).asString() }
+            val res = js(bg, "renderBatch", t.name, t.description, arr) ?: "[]"
             val rendered = mapper.readValue<List<Rendered?>>(res)
             synchronized(memo) {
                 miss.forEachIndexed { j, i ->
@@ -114,14 +203,14 @@ object Formatter {
 
     /** {presets: [{id,label,family,name,description}], fields: {section: [props]}} */
     fun presets(): Map<String, Any?> {
-        val res = call(false) { it.getMember("presets").execute() }
-        return mapper.readValue(res.asString())
+        val res = js(false, "presets") ?: "{}"
+        return mapper.readValue(res)
     }
 
     /** {ok, samples: [{label,name,description}], diagnostics: {name: [], description: []}} */
     fun preview(name: String, description: String): Map<String, Any?> {
-        val samples = call(false) { it.getMember("preview").execute(name, description).asString() }
-        val diag = call(false) { it.getMember("validate").execute(name, description).asString() }
+        val samples = js(false, "preview", name, description) ?: "[]"
+        val diag = js(false, "validate", name, description) ?: "{}"
         return linkedMapOf(
             "ok" to true,
             "samples" to mapper.readValue<List<Map<String, Any?>>>(samples),

@@ -796,7 +796,7 @@ object Streams {
         val result = if (respond) buildResult(cfg, collected, ctxRef.get()) else emptyList()
         val buildMs = System.currentTimeMillis() - tb
         if (buildMs > 1500) AppLogger.i("Streams: $kind/$id formatting took $buildMs ms")
-        AppLogger.i("Streams: $kind/$id -> ${result.size} streams in ${System.currentTimeMillis() - t0} ms (scrape complete=${parent.isCompleted})")
+        if (respond) AppLogger.i("Streams: $kind/$id -> ${result.size} streams in ${System.currentTimeMillis() - t0} ms (scrape complete=${parent.isCompleted})")
 
         if (cacheKey != null && respond) {
             // cache what we have now, marking whether stragglers are still running.

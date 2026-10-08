@@ -1,5 +1,7 @@
 FROM eclipse-temurin:21-jre-noble
 RUN apt-get update && apt-get install -y --no-install-recommends wget && rm -rf /var/lib/apt/lists/*
+# node runs the stream formatter (V8 JIT; GraalJS on this JDK is interpreter-only)
+COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
 WORKDIR /app
 COPY dist/lib /app/lib
 ENV CSBRIDGE_PORT=7095 CSBRIDGE_DATA_DIR=/app/data
