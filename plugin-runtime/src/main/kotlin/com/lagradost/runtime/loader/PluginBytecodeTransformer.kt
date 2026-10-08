@@ -60,10 +60,16 @@ object PluginBytecodeTransformer {
                                         type: String?,
                                     ) {
                                         // dex2jar sometimes emits a non-Throwable
-                                        // catch type -> VerifyError. Widening every
-                                        // catch to Throwable always verifies and
-                                        // only broadens the catch.
-                                        super.visitTryCatchBlock(start, end, handler, "java/lang/Throwable")
+                                        // catch type -> VerifyError, so such types
+                                        // are widened to Throwable. Real exception
+                                        // types must stay: widening them made the
+                                        // handler's stack slot a Throwable, and any
+                                        // handler calling a subtype method failed
+                                        // verification ("Bad type on operand stack"
+                                        // in FourKHDHub, HDhub4u and ~25 more).
+                                        val keep = type == null || type.endsWith("Exception") ||
+                                            type.endsWith("Error") || type == "java/lang/Throwable"
+                                        super.visitTryCatchBlock(start, end, handler, if (keep) type else "java/lang/Throwable")
                                     }
                                     override fun visitMethodInsn(
                                         opcode: Int,

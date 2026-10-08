@@ -78,7 +78,9 @@ object ExtensionLoader {
                 // The converted jar is tied to the dex it came from: a sidecar holds
                 // the dex CRC+size. Without it an updated .cs3 kept running the OLD
                 // converted classes forever (the cache only checked existence).
-                val dexTag = "${dexEntry.crc}:${dexEntry.size}"
+                // "t2" = transformer revision; bump it when PluginBytecodeTransformer
+                // changes so cached conversions are redone
+                val dexTag = "t2:${dexEntry.crc}:${dexEntry.size}"
                 val tagFile = File(jarFile.parentFile, jarFile.nameWithoutExtension + "-jvm.jar.dex")
                 val tagOk = tagFile.exists() && runCatching { tagFile.readText().trim() == dexTag }.getOrDefault(false)
                 // <64 B = empty artifact of an interrupted conversion (dex2jar
