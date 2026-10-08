@@ -377,7 +377,10 @@
         try {
           const meta = it && it[0] ? JSON.parse(it[0]) : {};
           const ctx = it && it[1] ? JSON.parse(it[1]) : {};
-          return JSON.parse(render(String(nameTpl), String(descTpl), meta, ctx));
+          // render() already returns the object — JSON.parse-ing it threw
+          // "[object Object] is not valid JSON" per entry, so EVERY serve
+          // silently fell back to built-in naming while preview looked fine
+          return render(String(nameTpl), String(descTpl), meta, ctx);
         } catch (e) { return null; }
       });
       return JSON.stringify(out);
