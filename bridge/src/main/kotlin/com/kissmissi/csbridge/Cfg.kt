@@ -37,7 +37,11 @@ object Cfg {
     val warmTop: Int = System.getenv("CSBRIDGE_WARM_TOP")?.toIntOrNull() ?: 40
     val warmWave: Int = System.getenv("CSBRIDGE_WARM_WAVE")?.toIntOrNull() ?: 20
     val warmGroup: Int = System.getenv("CSBRIDGE_WARM_GROUP")?.toIntOrNull() ?: 3
+    // night = full speed, day = reduced (titles warmed at once)
     val warmConcurrency: Int = System.getenv("CSBRIDGE_WARM_CONCURRENCY")?.toIntOrNull() ?: 2
+    val warmDayConcurrency: Int = System.getenv("CSBRIDGE_WARM_DAY_CONCURRENCY")?.toIntOrNull() ?: 1
+    val warmNightHours: String = System.getenv("CSBRIDGE_WARM_NIGHT_HOURS") ?: "1-8" // [start, end) local hours
+    val warmTz: java.time.ZoneId = runCatching { java.time.ZoneId.of(System.getenv("CSBRIDGE_WARM_TZ") ?: "Asia/Kolkata") }.getOrDefault(java.time.ZoneId.of("UTC"))
     // collection stops this long before the response deadline, leaving time to format
     val renderHeadroomMs: Long = System.getenv("CSBRIDGE_RENDER_HEADROOM_MS")?.toLongOrNull() ?: 2500L
     // process-wide caps on concurrent provider scrapes (all live requests / the warmer)

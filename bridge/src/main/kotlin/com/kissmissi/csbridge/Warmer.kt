@@ -58,6 +58,9 @@ object Warmer {
         "catalogUrl" to Cfg.warmCatalogUrl,
         "top" to Cfg.warmTop,
         "concurrency" to Cfg.warmConcurrency,
+        "dayConcurrency" to Cfg.warmDayConcurrency,
+        "nightHours" to "${Cfg.warmNightHours} ${Cfg.warmTz}",
+        "night" to isNight(),
         "installs" to runCatching { targets().size }.getOrDefault(0),
         "planTitles" to planSize,
         "planBuiltAt" to planBuiltAt,
@@ -68,6 +71,27 @@ object Warmer {
         "catalogs" to catalogs,
         "lastError" to lastError,
     )
+
+    fun isNight(): Boolean {
+        val (a, b) = Cfg.warmNightHours.split('-').mapNotNull { it.trim().toIntOrNull() }.let { (it.getOrNull(0) ?: 1) to (it.getOrNull(1) ?: 8) }
+        val h = java.time.ZonedDateTime.now(Cfg.warmTz).hour
+        return if (a <= b) h in a until b else (h >= a || h < b)
+    }
+
+    private val slotLock = Object()
+    private var inUse = 0
+
+    /** Day: Cfg.warmDayConcurrency titles at once; night: Cfg.warmConcurrency. */
+    private fun acquireSlot() {
+        synchronized(slotLock) {
+            while (inUse >= (if (isNight()) Cfg.warmConcurrency else Cfg.warmDayConcurrency).coerceAtLeast(1)) slotLock.wait(10_000)
+            inUse++
+        }
+    }
+
+    private fun releaseSlot() {
+        synchronized(slotLock) { inUse--; slotLock.notifyAll() }
+    }
 
     private fun waitForQuiet() {
         while (System.currentTimeMillis() - lastLiveAt < Cfg.warmLiveQuietMs) Thread.sleep(2000)
@@ -148,6 +172,7 @@ object Warmer {
         val age = Store.ageOf(cacheKey)
         if ((age != null && age < Cfg.warmFreshMs) || Streams.isScraping(cacheKey)) { skippedFresh.incrementAndGet(); return }
         waitForQuiet()
+        acquireSlot()
         val label = "${item.name ?: item.imdbId} ($kind, ${item.catalog} #${item.rank})"
         current.add(label)
         try {
@@ -159,6 +184,7 @@ object Warmer {
             AppLogger.i("Warmer: $label failed: ${t.message}")
         } finally {
             current.remove(label)
+            releaseSlot()
         }
     }
 
