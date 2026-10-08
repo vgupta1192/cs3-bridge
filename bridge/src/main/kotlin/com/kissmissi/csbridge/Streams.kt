@@ -523,28 +523,30 @@ object Streams {
                 val requestedE = parts.getOrNull(4)?.toIntOrNull()
                 ctxRef.set(FmtCtx(kind, requestedS, requestedE, null, null))
                 if (url != null) {
-                    kotlinx.coroutines.coroutineScope {
-                        for ((info, provs) in Repos.enabledProviders(cfg.providers)) {
-                            if (info.internalName != provName) continue
-                            for (prov in provs) {
-                                launchProvider(this, info.name, info.internalName + "#" + System.identityHashCode(prov)) {
-                                    val loaded = try {
-                                        prov.load(url)
-                                    } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
-                                        return@launchProvider ProviderOutcome(emptyList(), t)
-                                    } catch (t: CancellationException) {
-                                        throw t
-                                    } catch (t: Throwable) {
-                                        return@launchProvider ProviderOutcome(emptyList(), t)
-                                    } ?: return@launchProvider ProviderOutcome(emptyList(), IllegalStateException("load returned null"))
-                                    try {
-                                        ProviderOutcome(linksFromResponse(prov, loaded, requestedS, requestedE))
-                                    } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
-                                        ProviderOutcome(emptyList(), t)
-                                    } catch (t: CancellationException) {
-                                        throw t
-                                    } catch (t: Throwable) {
-                                        ProviderOutcome(emptyList(), t)
+                    fanOutPhase(Cfg.providerTimeoutMs + 30_000, "$kind/$id", "pass1-csb") {
+                        kotlinx.coroutines.coroutineScope {
+                            for ((info, provs) in Repos.enabledProviders(cfg.providers)) {
+                                if (info.internalName != provName) continue
+                                for (prov in provs) {
+                                    launchProvider(this, info.name, info.internalName + "#" + System.identityHashCode(prov)) {
+                                        val loaded = try {
+                                            prov.load(url)
+                                        } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
+                                            return@launchProvider ProviderOutcome(emptyList(), t)
+                                        } catch (t: CancellationException) {
+                                            throw t
+                                        } catch (t: Throwable) {
+                                            return@launchProvider ProviderOutcome(emptyList(), t)
+                                        } ?: return@launchProvider ProviderOutcome(emptyList(), IllegalStateException("load returned null"))
+                                        try {
+                                            ProviderOutcome(linksFromResponse(prov, loaded, requestedS, requestedE))
+                                        } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
+                                            ProviderOutcome(emptyList(), t)
+                                        } catch (t: CancellationException) {
+                                            throw t
+                                        } catch (t: Throwable) {
+                                            ProviderOutcome(emptyList(), t)
+                                        }
                                     }
                                 }
                             }
@@ -569,19 +571,23 @@ object Streams {
                 val pairs = Repos.enabledProviders(cfg.providers).flatMap { (info, provs) ->
                     provs.filter { it.supportedTypes.intersect(want).isNotEmpty() }.map { info to it }
                 }.sortedBy { rank[it.first.name.lowercase()] ?: 1000 }
-                kotlinx.coroutines.coroutineScope {
-                    for ((info, prov) in pairs) {
-                        val key = info.internalName + "#" + System.identityHashCode(prov)
-                        retryDefs[key] = info.name to { scrapeProvider(prov, titleInfo, requestedS, requestedE) }
-                        launchProvider(this, info.name, key) {
-                            scrapeProvider(prov, titleInfo, requestedS, requestedE)
+                fanOutPhase(Cfg.providerTimeoutMs + 30_000, "$kind/$id", "pass1") {
+                    kotlinx.coroutines.coroutineScope {
+                        for ((info, prov) in pairs) {
+                            val key = info.internalName + "#" + System.identityHashCode(prov)
+                            retryDefs[key] = info.name to { scrapeProvider(prov, titleInfo, requestedS, requestedE) }
+                            launchProvider(this, info.name, key) {
+                                scrapeProvider(prov, titleInfo, requestedS, requestedE)
+                            }
                         }
                     }
                 }
             }
 
-            // pass 1 REALLY is done here (the coroutineScope above waited for every
-            // child). The old structure put this code inside the coroutineScope body,
+            // pass 1 REALLY is done here (the phase scope above waited for every
+            // child, bounded by the phase cap for providers that block in
+            // non-cooperative code a cooperative withTimeout cannot interrupt).
+            // The original structure put this code inside the coroutineScope body,
             // which runs BEFORE the wait - the retry wave fired at t=0 with nothing
             // succeeded yet, so every fan-out launched ~2x providers at once and
             // hammered the sites into rate-limiting us.
@@ -591,10 +597,12 @@ object Streams {
             if (failed.isNotEmpty()) {
                 com.lagradost.cloudstream3.network.CloudflareKiller.resetFailedHosts()
                 AppLogger.i("Streams: retrying ${failed.size} failed providers")
-                kotlinx.coroutines.coroutineScope {
-                    for (key in failed) {
-                        retryDefs[key]?.let { (label, work) ->
-                            launchProvider(this, label, key + ":r", work)
+                fanOutPhase(Cfg.providerTimeoutMs + 30_000, "$kind/$id", "retry") {
+                    kotlinx.coroutines.coroutineScope {
+                        for (key in failed) {
+                            retryDefs[key]?.let { (label, work) ->
+                                launchProvider(this, label, key + ":r", work)
+                            }
                         }
                     }
                 }
@@ -602,6 +610,27 @@ object Streams {
         }
 
         fanOutSummary(kind, id, "done", attempted, succeeded, noContent, failed, errorSamples)
+    }
+
+    /** Run one fan-out phase (a coroutineScope whose children are provider scrapes)
+     *  with a hard wall-clock cap. Some providers block in non-cooperative code
+     *  (raw okhttp execute / DNS lookups) that a cooperative withTimeout cannot
+     *  interrupt - without the cap one stuck child stalls the retry wave, the
+     *  done summary and channel.close() indefinitely. On cap: the phase's job is
+     *  cancelled and we move on; a thread still blocked in a provider dies at its
+     *  next suspension point. */
+    private suspend fun fanOutPhase(capMs: Long, label: String, phase: String, block: suspend () -> Unit) {
+        try {
+            kotlinx.coroutines.withTimeout(capMs) {
+                block()
+            }
+        } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
+            AppLogger.i("Streams: phase $phase $label hit the ${(capMs / 1000)}s cap (stuck provider?), continuing")
+        } catch (t: CancellationException) {
+            throw t
+        } catch (t: Throwable) {
+            AppLogger.i("Streams: phase $phase $label failed: ${t.message}")
+        }
     }
 
     /** One compact line per fan-out phase + the top distinct error shapes. Provider
