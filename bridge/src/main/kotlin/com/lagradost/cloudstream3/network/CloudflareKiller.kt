@@ -1,35 +1,96 @@
 package com.lagradost.cloudstream3.network
 
-import com.lagradost.cloudstream3.app
-import com.lagradost.nicehttp.Requests.Companion.await
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.common.logging.AppLogger
-import kotlinx.coroutines.runBlocking
 import okhttp3.Headers
 import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import java.io.File
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 
+/**
+ * Cloudflare challenge handling for the headless bridge.
+ *
+ * There is no WebView/Playwright here (WebViewResolver.jvm is a stub), so a
+ * challenge is solved by trawl, the stack's FlareSolverr-compatible camoufox
+ * service, the same way Stream Master's kisskh provider does it. One solve
+ * yields a cf_clearance cookie bound to trawl's User-Agent and this host's IP;
+ * requests to that host then carry the cookie + UA until it expires.
+ *
+ * Solves only run for hosts on CSBRIDGE_CF_SOLVE_HOSTS (comma list, suffix
+ * match; default the kisskh domains) and when CSBRIDGE_TRAWL_URL is set, so a
+ * fan-out over dozens of challenged sites cannot queue up browser solves.
+ * Every other challenged host gets the challenge page passed through untouched.
+ */
 class CloudflareKiller : Interceptor {
     companion object {
         const val TAG = "CloudflareKiller"
         private val ERROR_CODES = listOf(403, 503)
         private val CLOUDFLARE_SERVERS = listOf("cloudflare-nginx", "cloudflare")
+        private val mapper = jacksonObjectMapper()
 
-        // Track hosts currently being resolved to avoid duplicate Playwright launches
-        private val resolvingHosts = ConcurrentHashMap.newKeySet<String>()
+        private val trawlUrl: String? = System.getenv("CSBRIDGE_TRAWL_URL")?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() }
+        private val solveHosts: List<String> = (System.getenv("CSBRIDGE_CF_SOLVE_HOSTS") ?: "kisskh.is,kisskh.id,kisskh.co,kisskh.nl")
+            .split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+        private const val FAIL_RETRY_MS = 30L * 60 * 1000
+        private const val CLEARANCE_MAX_MS = 6L * 3600 * 1000
 
-        // Track hosts where bypass has already failed — don't retry during this session
-        private val failedHosts = ConcurrentHashMap.newKeySet<String>()
+        // shared by every CloudflareKiller instance (plugins create their own)
+        private val cookies = ConcurrentHashMap<String, Map<String, String>>()
+        private val agents = ConcurrentHashMap<String, String>()
+        private val until = ConcurrentHashMap<String, Long>()
+        private val failedAt = ConcurrentHashMap<String, Long>()
+        private val announced = ConcurrentHashMap.newKeySet<String>()
+        private val hostLocks = ConcurrentHashMap<String, Any>()
 
-        /** No browser engine in the headless bridge (WebViewResolver.jvm is a stub). */
-        private val bypassSupported = System.getenv("CSBRIDGE_CF_BYPASS") == "1"
+        private val solverClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(90, TimeUnit.SECONDS)
+                .callTimeout(95, TimeUnit.SECONDS)
+                .build()
+        }
 
-        /** Concurrent fleet scraping can mark a host failed on a transient race;
-         *  the retry wave clears these so the second attempt gets a fresh solve. */
+        private val storeFile: File? get() = System.getenv("CSBRIDGE_DATA_DIR")?.let { File(it, "cf-clearance.json") }
+
+        data class Saved(val cookies: Map<String, String> = emptyMap(), val ua: String = "", val until: Long = 0)
+
+        init {
+            runCatching {
+                storeFile?.takeIf { it.exists() }?.let { f ->
+                    mapper.readValue<Map<String, Saved>>(f).forEach { (h, s) ->
+                        if (s.until > System.currentTimeMillis() && s.cookies.isNotEmpty()) {
+                            cookies[h] = s.cookies; agents[h] = s.ua; until[h] = s.until
+                        }
+                    }
+                }
+            }
+        }
+
+        private fun persist() {
+            runCatching {
+                val f = storeFile ?: return
+                val snap = cookies.keys.associateWith { h -> Saved(cookies[h] ?: emptyMap(), agents[h] ?: "", until[h] ?: 0) }
+                f.writeText(mapper.writeValueAsString(snap))
+            }
+        }
+
+        fun canSolve(host: String): Boolean {
+            if (trawlUrl == null) return false
+            val h = host.lowercase()
+            return solveHosts.any { h == it || h.endsWith(".$it") }
+        }
+
+        /** Kept for callers; failed hosts are retried after FAIL_RETRY_MS anyway. */
         fun resetFailedHosts() {
-            failedHosts.clear()
+            failedAt.clear()
         }
 
         fun parseCookieMap(cookie: String): Map<String, String> {
@@ -42,10 +103,53 @@ class CloudflareKiller : Interceptor {
                 }
                 .toMap()
         }
+
+        private fun isChallenge(r: Response): Boolean =
+            r.code in ERROR_CODES &&
+                CLOUDFLARE_SERVERS.any { (r.header("Server") ?: "").contains(it, ignoreCase = true) } &&
+                (r.header("Content-Type") ?: "").contains("text/html", ignoreCase = true)
+
+        private fun valid(host: String) = cookies.containsKey(host) && (until[host] ?: 0L) > System.currentTimeMillis()
+
+        /** Solve [host] through trawl; true when a cf_clearance is stored. One solve per host at a time. */
+        private fun solve(host: String, scheme: String): Boolean {
+            val lock = hostLocks.computeIfAbsent(host) { Any() }
+            synchronized(lock) {
+                if (valid(host)) return true // another request just solved it
+                failedAt[host]?.let { if (System.currentTimeMillis() - it < FAIL_RETRY_MS) return false }
+                val t0 = System.currentTimeMillis()
+                return try {
+                    val body = mapper.writeValueAsString(mapOf("cmd" to "request.get", "url" to "$scheme://$host/", "maxTimeout" to 60000))
+                    val req = Request.Builder().url("$trawlUrl/v1").post(body.toRequestBody("application/json".toMediaType())).build()
+                    val root = solverClient.newCall(req).execute().use { mapper.readTree(it.body?.string() ?: "{}") }
+                    val sol = root.path("solution")
+                    // trawl's browser is shared: keep only this host's cookies
+                    val jar = sol.path("cookies").filter { c ->
+                        val d = c.path("domain").asText("").removePrefix(".").lowercase()
+                        d.isNotEmpty() && (host == d || host.endsWith(".$d"))
+                    }
+                    val cf = jar.firstOrNull { it.path("name").asText() == "cf_clearance" }
+                    if (root.path("status").asText() != "ok" || cf == null) throw IllegalStateException("no cf_clearance (status ${root.path("status").asText("?")})")
+                    val exp = cf.path("expires").asDouble(0.0).let { if (it > 0) (it * 1000).toLong() else System.currentTimeMillis() + 30 * 60 * 1000 }
+                    cookies[host] = jar.associate { it.path("name").asText() to it.path("value").asText() }
+                    agents[host] = sol.path("userAgent").asText("")
+                    until[host] = minOf(exp - 60_000, System.currentTimeMillis() + CLEARANCE_MAX_MS)
+                    failedAt.remove(host)
+                    persist()
+                    AppLogger.i("$TAG: solved $host via trawl in ${System.currentTimeMillis() - t0} ms (valid ${((until[host] ?: 0) - System.currentTimeMillis()) / 60000} min)")
+                    true
+                } catch (t: Throwable) {
+                    failedAt[host] = System.currentTimeMillis()
+                    AppLogger.i("$TAG: trawl solve failed for $host: ${t.message} (retry in ${FAIL_RETRY_MS / 60000} min)")
+                    false
+                }
+            }
+        }
     }
 
-    val savedCookies: MutableMap<String, Map<String, String>> = ConcurrentHashMap()
-    val savedUserAgents: MutableMap<String, String> = ConcurrentHashMap()
+    // per-instance views onto the shared jar (plugins read these)
+    val savedCookies: MutableMap<String, Map<String, String>> get() = cookies
+    val savedUserAgents: MutableMap<String, String> get() = agents
 
     fun getCookieHeaders(url: String): Headers {
         val host = try {
@@ -56,10 +160,10 @@ class CloudflareKiller : Interceptor {
         val builder = Headers.Builder()
 
         host?.let { h ->
-            val cookieMap = savedCookies[h] ?: emptyMap()
-            val userAgent = savedUserAgents[h]
+            val cookieMap = cookies[h] ?: emptyMap()
+            val userAgent = agents[h]
 
-            if (userAgent != null) {
+            if (!userAgent.isNullOrBlank()) {
                 builder.add("user-agent", userAgent)
             }
             if (cookieMap.isNotEmpty()) {
@@ -70,139 +174,37 @@ class CloudflareKiller : Interceptor {
         return builder.build()
     }
 
+    /** The request with the stored clearance cookies + solver User-Agent applied. */
+    private fun withClearance(request: Request, host: String): Request {
+        val b = request.newBuilder()
+        agents[host]?.takeIf { it.isNotBlank() }?.let { b.header("user-agent", it) }
+        val existing = request.header("cookie")?.let { parseCookieMap(it) } ?: emptyMap()
+        val all = existing + (cookies[host] ?: emptyMap())
+        if (all.isNotEmpty()) b.header("cookie", all.entries.joinToString("; ") { "${it.key}=${it.value}" })
+        return b.build()
+    }
+
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         val host = request.url.host
-        // hot path without a per-request event loop: nothing solved for this host,
-        // or it is already known to be unsolvable
-        if (!savedCookies.containsKey(host) && (failedHosts.contains(host) || !bypassSupported)) {
-            if (failedHosts.contains(host)) return chain.proceed(request)
-            val response = chain.proceed(request)
-            if (response.code in ERROR_CODES &&
-                CLOUDFLARE_SERVERS.any { (response.header("Server") ?: "").contains(it, ignoreCase = true) } &&
-                (response.header("Content-Type") ?: "").contains("text/html", ignoreCase = true) &&
-                failedHosts.add(host)
-            ) AppLogger.i("$TAG: $host is behind a Cloudflare challenge (no browser available, passing through)")
-            return response
-        }
-        return interceptSlow(chain)
-    }
 
-    private fun interceptSlow(chain: Interceptor.Chain): Response = runBlocking {
-        val request = chain.request()
-        val host = request.url.host
-
-        // If we already have cookies for this host, use them directly (skip the initial request)
-        if (savedCookies.containsKey(host)) {
-            return@runBlocking proceed(request, savedCookies[host] ?: emptyMap(), savedUserAgents[host])
-        }
-
-        // If this host already failed bypass, don't waste time — just proceed normally
-        if (failedHosts.contains(host)) {
-            return@runBlocking chain.proceed(request)
+        // known clearance: send it; re-solve once if Cloudflare rejects it
+        if (valid(host)) {
+            val r = chain.proceed(withClearance(request, host))
+            if (!isChallenge(r)) return r
+            r.close()
+            cookies.remove(host); until.remove(host)
+            return if (solve(host, request.url.scheme)) chain.proceed(withClearance(request, host)) else chain.proceed(request)
         }
 
         val response = chain.proceed(request)
-        val serverHeader = response.header("Server") ?: ""
-        val contentType = response.header("Content-Type") ?: ""
+        if (!isChallenge(response)) return response
 
-        // Only trigger Cloudflare bypass if ALL conditions are met:
-        // 1. Response code is 403 or 503
-        // 2. Server header contains "cloudflare"
-        // 3. Content-Type is HTML (Cloudflare challenges are HTML pages, not JSON APIs)
-        val isCloudflareChallenge = response.code in ERROR_CODES &&
-            CLOUDFLARE_SERVERS.any { serverHeader.contains(it, ignoreCase = true) } &&
-            contentType.contains("text/html", ignoreCase = true)
-
-        if (!isCloudflareChallenge) {
-            return@runBlocking response
+        if (!canSolve(host)) {
+            if (announced.add(host)) AppLogger.i("$TAG: $host is behind a Cloudflare challenge (not on CSBRIDGE_CF_SOLVE_HOSTS, passing through)")
+            return response
         }
-
-        // The headless bridge has no WebView/Playwright (WebViewResolver.jvm is a
-        // stub that throws NotImplementedError). Attempting the bypass only threw
-        // from inside OkHttp, closed the challenge response the plugin could still
-        // read, never marked the host failed, and dumped a stack trace per call.
-        // Hand the challenge page back untouched and remember the host.
-        if (!bypassSupported) {
-            if (failedHosts.add(host)) AppLogger.i("$TAG: $host is behind a Cloudflare challenge (no browser available, passing through)")
-            return@runBlocking response
-        }
-
         response.close()
-
-        // Don't launch Playwright if another coroutine is already resolving this host
-        if (!resolvingHosts.add(host)) {
-            AppLogger.d("$TAG: Already resolving $host, skipping duplicate")
-            // Make a fresh request instead of returning closed response
-            return@runBlocking chain.proceed(request)
-        }
-
-        try {
-            val bypassed = bypassCloudflare(request)
-            if (bypassed != null) {
-                return@runBlocking bypassed
-            }
-        } finally {
-            resolvingHosts.remove(host)
-        }
-
-        // Bypass failed — remember this host to avoid retrying
-        failedHosts.add(host)
-        AppLogger.w("$TAG: Failed to bypass Cloudflare for $host (will not retry this session)")
-
-        // Make a FRESH request since the original response was closed
-        return@runBlocking chain.proceed(request)
-    }
-
-    private suspend fun proceed(request: Request, cookies: Map<String, String>, userAgent: String?): Response {
-        val builder = request.newBuilder()
-        if (userAgent != null) {
-            builder.header("user-agent", userAgent)
-        }
-
-        val existingCookies = request.header("cookie")?.let { parseCookieMap(it) } ?: emptyMap()
-        val finalCookies = cookies + existingCookies
-        if (finalCookies.isNotEmpty()) {
-            builder.header("cookie", finalCookies.entries.joinToString("; ") { "${it.key}=${it.value}" })
-        }
-
-        return app.baseClient.newCall(builder.build()).await()
-    }
-
-    private suspend fun bypassCloudflare(request: Request): Response? {
-        val url = request.url.toString()
-        val host = request.url.host
-
-        AppLogger.i("$TAG: Loading Playwright to solve Cloudflare for $host")
-
-        var solved = false
-        val result = WebViewResolver(
-            Regex(".^"), // never exit early based on URL
-            additionalUrls = listOf(Regex(".")), // match all sub-requests to poll cookies
-            userAgent = null,
-            useOkhttp = false,
-        ).resolveUsingWebView(url) {
-            // In PlaywrightResolverImpl we don't have access to the cookies inside this callback
-            // easily without blocking, but PlaywrightResolverImpl itself polls for cf_clearance.
-            // So we just return false here so PlaywrightResolver doesn't exit early,
-            // and instead relies on its internal cf_clearance check!
-            false
-        }
-
-        val resolvedRequest = result.first ?: return null
-
-        val cookieHeader = resolvedRequest.header("cookie")
-        val userAgentHeader = resolvedRequest.header("user-agent")
-
-        if (cookieHeader != null && cookieHeader.contains("cf_clearance")) {
-            savedCookies[host] = parseCookieMap(cookieHeader)
-            if (userAgentHeader != null) {
-                savedUserAgents[host] = userAgentHeader
-            }
-            AppLogger.i("$TAG: Successfully bypassed Cloudflare for $host")
-            return proceed(request, savedCookies[host] ?: emptyMap(), savedUserAgents[host])
-        }
-
-        return null
+        return if (solve(host, request.url.scheme)) chain.proceed(withClearance(request, host)) else chain.proceed(request)
     }
 }
