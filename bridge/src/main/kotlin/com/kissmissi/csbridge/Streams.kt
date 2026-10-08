@@ -472,7 +472,7 @@ object Streams {
         id: String,
         channel: Channel<Pair<String, List<ExtractorLink>>>,
         ctxRef: java.util.concurrent.atomic.AtomicReference<FmtCtx?>,
-    ) = kotlinx.coroutines.coroutineScope {
+    ) {
         val sem = Semaphore(Cfg.maxConcurrent)
         val attempted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val succeeded = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
@@ -481,9 +481,9 @@ object Streams {
         val errorSamples = java.util.concurrent.ConcurrentHashMap<String, String>()
         val retryDefs = java.util.concurrent.ConcurrentHashMap<String, Pair<String, suspend () -> ProviderOutcome>>()
 
-        fun launchProvider(label: String, key: String, work: suspend () -> ProviderOutcome) {
+        fun launchProvider(scope: kotlinx.coroutines.CoroutineScope, label: String, key: String, work: suspend () -> ProviderOutcome) {
             attempted.add(key)
-            this@coroutineScope.launch(scrapeDispatcher) {
+            scope.launch(scrapeDispatcher) {
                 try {
                     sem.acquire()
                     try {
@@ -523,27 +523,29 @@ object Streams {
                 val requestedE = parts.getOrNull(4)?.toIntOrNull()
                 ctxRef.set(FmtCtx(kind, requestedS, requestedE, null, null))
                 if (url != null) {
-                    for ((info, provs) in Repos.enabledProviders(cfg.providers)) {
-                        if (info.internalName != provName) continue
-                        for (prov in provs) {
-                            launchProvider(info.name, info.internalName + "#" + System.identityHashCode(prov)) {
-                                val loaded = try {
-                                    prov.load(url)
-                                } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
-                                    return@launchProvider ProviderOutcome(emptyList(), t)
-                                } catch (t: CancellationException) {
-                                    throw t
-                                } catch (t: Throwable) {
-                                    return@launchProvider ProviderOutcome(emptyList(), t)
-                                } ?: return@launchProvider ProviderOutcome(emptyList(), IllegalStateException("load returned null"))
-                                try {
-                                    ProviderOutcome(linksFromResponse(prov, loaded, requestedS, requestedE))
-                                } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
-                                    ProviderOutcome(emptyList(), t)
-                                } catch (t: CancellationException) {
-                                    throw t
-                                } catch (t: Throwable) {
-                                    ProviderOutcome(emptyList(), t)
+                    kotlinx.coroutines.coroutineScope {
+                        for ((info, provs) in Repos.enabledProviders(cfg.providers)) {
+                            if (info.internalName != provName) continue
+                            for (prov in provs) {
+                                launchProvider(this, info.name, info.internalName + "#" + System.identityHashCode(prov)) {
+                                    val loaded = try {
+                                        prov.load(url)
+                                    } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
+                                        return@launchProvider ProviderOutcome(emptyList(), t)
+                                    } catch (t: CancellationException) {
+                                        throw t
+                                    } catch (t: Throwable) {
+                                        return@launchProvider ProviderOutcome(emptyList(), t)
+                                    } ?: return@launchProvider ProviderOutcome(emptyList(), IllegalStateException("load returned null"))
+                                    try {
+                                        ProviderOutcome(linksFromResponse(prov, loaded, requestedS, requestedE))
+                                    } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
+                                        ProviderOutcome(emptyList(), t)
+                                    } catch (t: CancellationException) {
+                                        throw t
+                                    } catch (t: Throwable) {
+                                        ProviderOutcome(emptyList(), t)
+                                    }
                                 }
                             }
                         }
@@ -567,26 +569,33 @@ object Streams {
                 val pairs = Repos.enabledProviders(cfg.providers).flatMap { (info, provs) ->
                     provs.filter { it.supportedTypes.intersect(want).isNotEmpty() }.map { info to it }
                 }.sortedBy { rank[it.first.name.lowercase()] ?: 1000 }
-                for ((info, prov) in pairs) {
-                    val key = info.internalName + "#" + System.identityHashCode(prov)
-                    retryDefs[key] = info.name to { scrapeProvider(prov, titleInfo, requestedS, requestedE) }
-                    launchProvider(info.name, key) {
-                        scrapeProvider(prov, titleInfo, requestedS, requestedE)
+                kotlinx.coroutines.coroutineScope {
+                    for ((info, prov) in pairs) {
+                        val key = info.internalName + "#" + System.identityHashCode(prov)
+                        retryDefs[key] = info.name to { scrapeProvider(prov, titleInfo, requestedS, requestedE) }
+                        launchProvider(this, info.name, key) {
+                            scrapeProvider(prov, titleInfo, requestedS, requestedE)
+                        }
                     }
                 }
             }
 
-            // pass 1 done (this scope waited for all children). Retry ONLY providers
-            // that FAILED (threw / timed out / null load) - providers that searched
-            // fine and have no content are not retried; retrying all ~290 empties
-            // hammered sites for nothing on every lookup.
+            // pass 1 REALLY is done here (the coroutineScope above waited for every
+            // child). The old structure put this code inside the coroutineScope body,
+            // which runs BEFORE the wait - the retry wave fired at t=0 with nothing
+            // succeeded yet, so every fan-out launched ~2x providers at once and
+            // hammered the sites into rate-limiting us.
+            // Retry ONLY providers that FAILED (threw / timed out / null load) -
+            // providers that searched fine and have no content are not retried.
             fanOutSummary(kind, id, "pass1", attempted, succeeded, noContent, failed, errorSamples)
             if (failed.isNotEmpty()) {
                 com.lagradost.cloudstream3.network.CloudflareKiller.resetFailedHosts()
                 AppLogger.i("Streams: retrying ${failed.size} failed providers")
-                for (key in failed) {
-                    retryDefs[key]?.let { (label, work) ->
-                        launchProvider(label, key + ":r", work)
+                kotlinx.coroutines.coroutineScope {
+                    for (key in failed) {
+                        retryDefs[key]?.let { (label, work) ->
+                            launchProvider(this, label, key + ":r", work)
+                        }
                     }
                 }
             }
