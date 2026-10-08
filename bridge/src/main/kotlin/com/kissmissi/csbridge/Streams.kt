@@ -530,7 +530,9 @@ object Streams {
         if (cfg.langs.isNotEmpty()) {
             // stable sort: preferred languages first, provider order kept within
             // the same language rank; unknown-language streams rank last
-            rows = ArrayList(rows.sortedBy { linkLanguages(it.link, it.lang).minOfOrNull { l -> cfg.langs.indexOf(l).takeIf { i -> i >= 0 } } ?: Int.MAX_VALUE })
+            rows = ArrayList(rows.sortedBy { row ->
+                linkLanguages(row.link, row.lang).minOfOrNull { l -> cfg.langs.indexOf(l).let { if (it < 0) Int.MAX_VALUE else it } } ?: Int.MAX_VALUE
+            })
             if (cfg.langFilter > 0) {
                 rows = ArrayList(rows.filter { row ->
                     val ls = linkLanguages(row.link, row.lang)
