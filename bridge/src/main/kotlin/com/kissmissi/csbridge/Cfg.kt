@@ -29,6 +29,12 @@ object Cfg {
     val priorityMinStreams: Int = System.getenv("CSBRIDGE_PRIORITY_MIN_STREAMS")?.toIntOrNull() ?: 6
     // one top-ranked provider with a full page answers after this long
     val soloMinMs: Long = System.getenv("CSBRIDGE_SOLO_MIN_MS")?.toLongOrNull() ?: 4000L
+    // cold titles: past relaxMs this many usable links answer, past anyMs one does
+    val relaxMs: Long = System.getenv("CSBRIDGE_RELAX_MS")?.toLongOrNull() ?: 8000L
+    val relaxMinStreams: Int = System.getenv("CSBRIDGE_RELAX_MIN_STREAMS")?.toIntOrNull() ?: 3
+    val anyMs: Long = System.getenv("CSBRIDGE_ANY_MS")?.toLongOrNull() ?: 12000L
+    // series: scrape the next episode in the background after each episode tap
+    val prefetchNext: Boolean = System.getenv("CSBRIDGE_PREFETCH_NEXT") != "0"
     val priorityMinMs: Long = System.getenv("CSBRIDGE_PRIORITY_MIN_MS")?.toLongOrNull() ?: 2500L
     // stream cache: served up to cacheMaxMs, refreshed in the background once older than cacheStaleMs
     val cacheStaleMs: Long = System.getenv("CSBRIDGE_CACHE_STALE_MS")?.toLongOrNull() ?: (6L * 3600 * 1000)

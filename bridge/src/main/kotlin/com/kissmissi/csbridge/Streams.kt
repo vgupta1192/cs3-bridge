@@ -157,6 +157,11 @@ object Streams {
     private val bracketRegex = Regex("""\[.*?\]|\(.*?\)""")
     private val nonAlnumRegex = Regex("[^a-z0-9]+")
 
+    /** Provider key for order/priority lookups: the install's `order` holds
+     *  display names ("Stream Master"), results carry labels that can be
+     *  internal names ("StreamMaster"); both reduce to "streammaster". */
+    private fun rk(s: String): String = s.lowercase().replace(nonAlnumRegex, "")
+
     fun norm(s: String): String = s.lowercase()
         .replace(bracketRegex, " ")
         .replace(nonAlnumRegex, " ").trim()
@@ -349,6 +354,21 @@ object Streams {
     }
 
 
+    // ---- per-provider memos (in memory) ----
+    // search hit per (provider, title): the next episode, rescrapes and the
+    // retry wave skip the search request
+    private const val SEARCH_MEMO_MS = 12L * 3600 * 1000
+    private const val LOAD_MEMO_MS = 20L * 60 * 1000
+    private fun <V> lru(max: Int) = object : java.util.LinkedHashMap<String, Pair<V, Long>>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<V, Long>>?): Boolean = size > max
+    }
+    private val searchMemo = lru<String>(4000)
+    private val loadMemo = lru<LoadResponse>(120)
+    private fun <V> memoGet(m: java.util.LinkedHashMap<String, Pair<V, Long>>, k: String, ttl: Long): V? = synchronized(m) {
+        m[k]?.let { (v, ts) -> if (System.currentTimeMillis() - ts < ttl) v else { m.remove(k); null } }
+    }
+    private fun <V> memoPut(m: java.util.LinkedHashMap<String, Pair<V, Long>>, k: String, v: V) = synchronized(m) { m.put(k, v to System.currentTimeMillis()) }
+
     /** Per-provider outcome: links, or the error that made the scrape fail (retryable). */
     class ProviderOutcome(val links: List<ExtractorLink>, val error: Throwable? = null)
 
@@ -360,7 +380,9 @@ object Streams {
         matchUrl: String? = null,
         timeoutMs: Long = Cfg.providerTimeoutMs,
     ): ProviderOutcome = withTimeout(timeoutMs) {
-        val url = matchUrl ?: run {
+        val memoKey = titleInfo?.let { "${System.identityHashCode(prov)}|${it.type}|${it.imdbId}" }
+        val memoUrl = if (matchUrl == null && memoKey != null) memoGet(searchMemo, memoKey, SEARCH_MEMO_MS) else null
+        val url = matchUrl ?: memoUrl ?: run {
             val results = try {
                 prov.search(titleInfo?.name ?: "", 1)?.items ?: prov.search(titleInfo?.name ?: "") ?: emptyList()
             } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
@@ -371,16 +393,24 @@ object Streams {
                 return@withTimeout ProviderOutcome(emptyList(), t)
             }
             results.firstOrNull { matches(it, titleInfo?.name ?: "", titleInfo?.year) }?.url
+                ?.also { if (memoKey != null) memoPut(searchMemo, memoKey, it) }
         } ?: return@withTimeout ProviderOutcome(emptyList())
-        val loaded = try {
-            prov.load(url)
+        // series: the next episode reuses the loaded show (episode list) for a while
+        val loadKey = "${System.identityHashCode(prov)}|$url"
+        val loaded = memoGet(loadMemo, loadKey, LOAD_MEMO_MS) ?: try {
+            prov.load(url)?.also { if (it is TvSeriesLoadResponse) memoPut(loadMemo, loadKey, it) }
         } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
             return@withTimeout ProviderOutcome(emptyList(), t)
         } catch (t: CancellationException) {
             throw t
         } catch (t: Throwable) {
+            // a remembered match that no longer loads: forget it, the retry wave searches again
+            if (memoUrl != null && memoKey != null) synchronized(searchMemo) { searchMemo.remove(memoKey) }
             return@withTimeout ProviderOutcome(emptyList(), t)
-        } ?: return@withTimeout ProviderOutcome(emptyList(), IllegalStateException("load returned null"))
+        } ?: run {
+            if (memoUrl != null && memoKey != null) synchronized(searchMemo) { searchMemo.remove(memoKey) }
+            return@withTimeout ProviderOutcome(emptyList(), IllegalStateException("load returned null"))
+        }
         try {
             ProviderOutcome(linksFromResponse(prov, loaded, season, episode))
         } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
@@ -435,7 +465,7 @@ object Streams {
     // definitively dead ones (404/410/451, unknown host, connection refused)
     // are dropped so repeat taps only show links that open. Timeouts are kept.
     private val validateOn = System.getenv("CSBRIDGE_VALIDATE") != "0"
-    private val validateMax = System.getenv("CSBRIDGE_VALIDATE_MAX")?.toIntOrNull() ?: 60
+    private val validateMax = System.getenv("CSBRIDGE_VALIDATE_MAX")?.toIntOrNull() ?: 150
     private val probeVerdicts = object : java.util.LinkedHashMap<String, Pair<Boolean, Long>>(512, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Boolean, Long>>?): Boolean = size > 4000
     }
@@ -467,26 +497,68 @@ object Streams {
         return dead
     }
 
-    @Suppress("UNCHECKED_CAST")
-    private suspend fun dropDead(streams: List<Map<String, Any?>>): List<Map<String, Any?>> {
-        if (!validateOn || streams.isEmpty()) return streams
+    /** URLs of definitively dead links among what the providers returned
+     *  (only links this install would show, first [validateMax]). */
+    private suspend fun deadUrls(cfg: BridgeConfig, collected: List<Triple<String, String?, List<ExtractorLink>>>): Set<String> {
+        if (!validateOn) return emptySet()
+        val links = collected.flatMap { it.third }.filter { link ->
+            link.url.startsWith("http") && link.type != ExtractorLinkType.TORRENT && link.type != ExtractorLinkType.MAGNET &&
+                !(cfg.blockCam && isCam(link)) && tierOf(link).let { it == 0 || it in cfg.qualities }
+        }.distinctBy { it.url }.take(validateMax)
+        if (links.isEmpty()) return emptySet()
         val sem = Semaphore(8)
-        val dead = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+        val dead = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         kotlinx.coroutines.coroutineScope {
-            streams.take(validateMax).forEachIndexed { i, st ->
-                val url = st["url"] as? String ?: return@forEachIndexed
-                if (!url.startsWith("http")) return@forEachIndexed
-                val headers = (((st["behaviorHints"] as? Map<String, Any?>)?.get("proxyHeaders") as? Map<String, Any?>)
-                    ?.get("request") as? Map<String, String>) ?: emptyMap()
+            for (link in links) {
+                val headers = runCatching { link.getAllHeaders().filter { it.value.isNotBlank() } }.getOrDefault(emptyMap())
                 launch(Dispatchers.IO) {
                     sem.acquire()
-                    try { if (probeDead(url, headers)) dead.add(i) } finally { sem.release() }
+                    try { if (probeDead(link.url, headers)) dead.add(link.url) } finally { sem.release() }
                 }
             }
         }
-        if (dead.isEmpty()) return streams
-        AppLogger.i("Streams: dropped ${dead.size} dead links of ${streams.size}")
-        return streams.filterIndexed { i, _ -> i !in dead }
+        if (dead.isNotEmpty()) AppLogger.i("Streams: dropped ${dead.size} dead links of ${links.size}")
+        return dead
+    }
+
+    // ---- duplicate detection ----
+    // "full" (default): same URL modulo host/download/signing params, or same
+    // exact file size; "url": URL keys only; "off": exact URL only (old)
+    private val dedupeMode = (System.getenv("CSBRIDGE_DEDUPE") ?: "full").lowercase()
+    private val idToken = Regex("[A-Za-z0-9_-]{8,}")
+    // query params that only sign/expire/flag a URL, not pick the file
+    private val volatileParams = setOf(
+        "download", "dl", "sign", "signature", "sig", "token", "auth", "auth_key", "expires", "exp", "e", "t", "st",
+        "hash", "md5", "verify", "policy", "key-pair-id", "hdnts", "x-amz-signature", "x-amz-date", "x-amz-expires",
+        "x-amz-credential", "x-amz-security-token", "x-amz-signedheaders", "x-amz-algorithm",
+    )
+    private val exactSizeRegex = Regex("""(?i)(\d+[.,]\d+)\s*(GB|GiB|MB|MiB)\b""")
+
+    /** Keys that identify the underlying file; two links sharing any key are duplicates. */
+    private fun dupKeys(link: ExtractorLink): List<String> {
+        if (link.type == ExtractorLinkType.TORRENT || link.type == ExtractorLinkType.MAGNET) return emptyList()
+        val uri = runCatching { java.net.URI(link.url) }.getOrNull() ?: return emptyList()
+        val keys = ArrayList<String>(2)
+        // host-free path + file-picking params: pixeldrain.com vs .dev, one
+        // ?file= id behind several workers.dev hosts, re-signed CDN URLs
+        val path = uri.rawPath ?: ""
+        val query = (uri.rawQuery ?: "").split('&')
+            .filter { it.isNotBlank() && it.substringBefore('=').lowercase() !in volatileParams }
+            .sorted().joinToString("&")
+        val pq = if (query.isEmpty()) path else "$path?$query"
+        if (idToken.findAll(pq).any { t -> t.value.any(Char::isDigit) && t.value.any(Char::isLetter) }) keys.add("u:$pq")
+        // the same release mirrored on GDrive / R2 / workers: sizes with two
+        // decimals do not collide between different files of one title
+        if (dedupeMode == "full") {
+            val text = runCatching { java.net.URLDecoder.decode("${link.name} ${link.source} ${path.substringAfterLast('/')}", "UTF-8") }
+                .getOrDefault("${link.name} ${link.source}")
+            exactSizeRegex.find(text)?.let { m ->
+                val v = m.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return@let
+                val gb = if (m.groupValues[2].startsWith("G", true)) v else v / 1024.0
+                if (gb >= 0.3) keys.add("s:${Math.round(gb * 100)}")
+            }
+        }
+        return keys
     }
 
     /**
@@ -559,7 +631,7 @@ object Streams {
 
     /** The user's top-ranked providers (configure-page order), lowercased labels. */
     private fun priorityLabels(cfg: BridgeConfig): Set<String> =
-        cfg.order.take(Cfg.priorityCount).map { it.lowercase() }.toSet()
+        cfg.order.take(Cfg.priorityCount).map { rk(it) }.toSet()
 
     fun isScraping(cacheKey: String) = activeScrapes.containsKey(cacheKey) || lateJobs.containsKey(cacheKey)
 
@@ -571,6 +643,36 @@ object Streams {
             lateJobs[cacheKey]?.join()
         } finally {
             activeScrapes.remove(cacheKey)
+        }
+    }
+
+    private val prefetching = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Series binge: after a tap on S:E, scrape S:E+1 in the background (warmer
+     *  lanes, yields to live taps) so the next episode opens from the cache. */
+    fun prefetchNext(cfg: BridgeConfig, kind: String, id: String, fp: String) {
+        if (!Cfg.prefetchNext || kind != "series") return
+        val parts = id.split(":")
+        if (parts.size != 3 || !parts[0].startsWith("tt")) return
+        val ep = parts[2].toIntOrNull() ?: return
+        val nextId = "${parts[0]}:${parts[1]}:${ep + 1}"
+        val key = "streams2:$fp:$kind:$nextId"
+        if (isScraping(key) || Store.get(key, Cfg.cacheStaleMs) != null) return
+        val now = System.currentTimeMillis()
+        val last = lastBackground.put("prefetch:$key", now)
+        if (last != null && now - last < INCOMPLETE_RESCRAPE_MS) return
+        if (prefetching.incrementAndGet() > 2) { prefetching.decrementAndGet(); return }
+        scrapeScope.launch {
+            try {
+                // let this tap's own first answer and Stream Master call go first
+                kotlinx.coroutines.delay(20_000)
+                AppLogger.i("Streams: prefetching next episode $kind/$nextId")
+                warm(cfg, kind, nextId, key)
+            } catch (t: Throwable) {
+                AppLogger.i("Streams: prefetch failed $kind/$nextId: ${t.message}")
+            } finally {
+                prefetching.decrementAndGet()
+            }
         }
     }
 
@@ -657,7 +759,7 @@ object Streams {
                     // (torrents off, quality tiers, cam, language) — raw link
                     // counts sent early answers that filtered down to 0 streams
                     val n = usableByLabel.sumOf { it.second }
-                    val pdone = usableByLabel.map { it.first.lowercase() }.filter { it in priority }.distinct().size
+                    val pdone = usableByLabel.map { rk(it.first) }.filter { it in priority }.distinct().size
                     if (pdone >= Cfg.priorityMinProviders && n >= Cfg.priorityMinStreams) break
                     // past the fast window one top provider with a full page is
                     // enough (Stream Master's cached answer, typically) - the
@@ -668,6 +770,14 @@ object Streams {
                     val n = usableByLabel.sumOf { it.second }
                     val provs = usableByLabel.map { it.first }.distinct().size
                     if (n >= Cfg.fastMinStreams && provs >= Cfg.fastMinProviders) break
+                }
+                // cold titles: the gates above can hold a thin-but-playable
+                // answer until the deadline (18-28 s). Past relaxMs a few
+                // links are enough, past anyMs one is; the rest merges into
+                // the cache for the next tap
+                if (respond && elapsed >= Cfg.relaxMs) {
+                    val n = usableByLabel.sumOf { it.second }
+                    if (n >= Cfg.relaxMinStreams || (elapsed >= Cfg.anyMs && n >= 1)) break
                 }
             }
         }
@@ -710,7 +820,9 @@ object Streams {
                         synchronized(collected) { collected.add(got) }
                     }
                     withTimeoutOrNull(5_000) { parent.join() }
-                    val full = dropDead(buildResult(cfg, collected, ctxRef.get(), bg = true))
+                    // dead links go before dedupe, so a dead copy never hides a live duplicate
+                    val dead = deadUrls(cfg, synchronized(collected) { ArrayList(collected) })
+                    val full = buildResult(cfg, collected, ctxRef.get(), bg = true, dead = dead)
                     if (full.isNotEmpty() || respond) {
                         // a 30s lull can break the loop while the parent scrape is
                         // still running - keep the incomplete flag honest so the
@@ -757,27 +869,45 @@ object Streams {
         } else true
     }
 
-    private fun buildResult(cfg: BridgeConfig, collected: List<Triple<String, String?, List<ExtractorLink>>>, ctx: FmtCtx?, bg: Boolean = false): List<Map<String, Any?>> {
+    private fun buildResult(
+        cfg: BridgeConfig,
+        collected: List<Triple<String, String?, List<ExtractorLink>>>,
+        ctx: FmtCtx?,
+        bg: Boolean = false,
+        dead: Set<String> = emptySet(),
+    ): List<Map<String, Any?>> {
         data class Row(val stream: Map<String, Any?>, val label: String, val lang: String?, val link: ExtractorLink)
         // one templates lookup per serve; null = built-in naming everywhere
         val templates = runCatching { Formatter.templates(cfg.fmt.f, cfg.fmt.n, cfg.fmt.d, bg) }.getOrNull()
-        val rank = cfg.order.withIndex().associate { it.value.lowercase() to it.index }
+        val rank = cfg.order.withIndex().associate { rk(it.value) to it.index }
         data class Cand(val label: String, val lang: String?, val link: ExtractorLink) {
             // shown provider name; ranking keeps using label
             val shown: String get() = if (label == StreamMaster.INTERNAL)
                 (if (link.source.isNotBlank() && link.source != StreamMaster.NAME) "${StreamMaster.NAME} · ${link.source}" else StreamMaster.NAME)
             else label
         }
-        val candidates = ArrayList<Cand>()
+        val all = ArrayList<Cand>()
         val seen = HashSet<String>()
         for ((label, lang, links) in collected) {
             for (link in links) {
+                if (link.url in dead) continue
                 if (cfg.blockCam && isCam(link)) continue
                 val tier = tierOf(link)
                 if (tier != 0 && tier !in cfg.qualities) continue
-                if (seen.add(link.url)) candidates.add(Cand(label, lang, link))
+                if (seen.add(link.url)) all.add(Cand(label, lang, link))
             }
         }
+        // same file from several providers / mirrors: keep the copy of the
+        // best-ranked provider (stable sort keeps arrival order inside one)
+        all.sortBy { rank[rk(it.label)] ?: 1000 }
+        val candidates = if (dedupeMode == "off") all else {
+            val keys = HashSet<String>()
+            all.filter { c ->
+                val ks = dupKeys(c.link)
+                if (ks.any { it in keys }) false else { keys.addAll(ks); true }
+            }
+        }
+        if (bg && candidates.size < all.size) AppLogger.i("Streams: dedupe dropped ${all.size - candidates.size} duplicate links of ${all.size}")
         // format the whole serve in ONE polyglot hop (torrent/magnet links keep the
         // built-in externalUrl handling; batch entries that fail = built-in naming)
         val formatted = HashMap<Int, Formatter.Rendered?>()
@@ -804,7 +934,7 @@ object Streams {
             } ?: return@forEachIndexed
             rows.add(Row(st, cand.label, cand.lang, cand.link))
         }
-        rows.sortBy { rank[it.label.lowercase()] ?: 1000 }
+        rows.sortBy { rank[rk(it.label)] ?: 1000 }
         if (cfg.langs.isNotEmpty()) {
             // stable sort: preferred languages first, provider order kept within
             // the same language rank; unknown-language streams rank last
@@ -829,7 +959,7 @@ object Streams {
             val cmp = Comparator<Row> { a, b ->
                 val g = when (cfg.group) {
                     "quality" -> tierOf(b.link).compareTo(tierOf(a.link))
-                    "provider" -> (rank[a.label.lowercase()] ?: 1000).compareTo(rank[b.label.lowercase()] ?: 1000)
+                    "provider" -> (rank[rk(a.label)] ?: 1000).compareTo(rank[rk(b.label)] ?: 1000)
                         .let { if (it != 0) it else a.label.compareTo(b.label) }
                     else -> 0
                 }
@@ -878,7 +1008,7 @@ object Streams {
                 try {
                     // priority lane: the user's top providers start at once
                     // instead of queueing behind the semaphore
-                    val lane = !warm && (label.lowercase() in priority || key.substringBefore('#').lowercase() in priority)
+                    val lane = !warm && (rk(label) in priority || rk(key.substringBefore('#')) in priority)
                     if (!lane) sem.acquire()
                     // process-wide cap shared by every request (and a small
                     // separate one for the warmer): bursts of several titles
@@ -995,7 +1125,7 @@ object Streams {
             // Stream Master: one HTTP call to its (usually warm) cache, started
             // before title resolution and outside the provider slots - it does
             // its own scraping in its own container
-            val smJob = if (StreamMaster.enabled && StreamMaster.INTERNAL in cfg.providers && imdb.startsWith("tt")) {
+            val smJob = if (StreamMaster.enabled && StreamMaster.available() && StreamMaster.INTERNAL in cfg.providers && imdb.startsWith("tt")) {
                 attempted.add(StreamMaster.INTERNAL)
                 scrapeScope.launch {
                     val tStart = System.currentTimeMillis()
@@ -1022,10 +1152,10 @@ object Streams {
                     setOf(TvType.Movie, TvType.AnimeMovie)
                 else
                     setOf(TvType.TvSeries, TvType.Anime, TvType.Cartoon, TvType.OVA, TvType.AsianDrama, TvType.Documentary)
-                val rank = cfg.order.withIndex().associate { it.value.lowercase() to it.index }
+                val rank = cfg.order.withIndex().associate { rk(it.value) to it.index }
                 val allPairs = Repos.enabledProviders(cfg.providers).flatMap { (info, provs) ->
                     provs.filter { it.supportedTypes.intersect(want).isNotEmpty() }.map { info to it }
-                }.sortedBy { rank[it.first.name.lowercase()] ?: 1000 }
+                }.sortedBy { rank[rk(it.first.name)] ?: 1000 }
                 // anime/cartoon-only sources searched every live-action title and
                 // never matched — skip them unless the title is animated (or unknown)
                 val typed = if (titleInfo.animated == false) allPairs.filter { !animeOnly(it.first) } else allPairs

@@ -316,6 +316,7 @@ object HttpApi {
         val fp = Installs.fingerprint(segs[0])
         val cacheKey = "streams2:$fp:$kind:$id"
         Warmer.noteLive(fp, segs[0])
+        Streams.prefetchNext(cfg, kind, id, fp)
         val cached = Store.get(cacheKey, Cfg.cacheMaxMs)
         if (cached != null) {
             val entry = runCatching { mapper.readValue<Map<String, Any?>>(cached) }.getOrNull() ?: mapOf("streams" to emptyList<Any?>())

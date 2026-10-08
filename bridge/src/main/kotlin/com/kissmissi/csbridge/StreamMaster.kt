@@ -44,6 +44,12 @@ object StreamMaster {
 
     @Volatile private var health = HealthEntry()
 
+    // Stream Master stopped / restarting: its container name stops resolving or
+    // the port refuses. Skip it for a minute instead of failing on every tap;
+    // csbridge then answers from its CloudStream providers alone.
+    @Volatile private var downUntil = 0L
+    fun available(): Boolean = System.currentTimeMillis() >= downUntil
+
     fun healthEntry(): HealthEntry = health
 
     /** Manifest probe for the configure page's health views. */
@@ -78,9 +84,17 @@ object StreamMaster {
     /** Links for one stremio-style request (kind = movie|series, id = tt..[:s:e]). */
     suspend fun links(kind: String, id: String): List<ExtractorLink> = withContext(Dispatchers.IO) {
         val url = "${Cfg.smUrl}/stream/$kind/${java.net.URLEncoder.encode(id, "UTF-8").replace("%3A", ":")}.json"
-        val body = client.newCall(okhttp3.Request.Builder().url(url).build()).execute().use { r ->
-            if (!r.isSuccessful) throw java.io.IOException("Stream Master HTTP ${r.code}")
-            r.body?.string() ?: ""
+        val body = try {
+            client.newCall(okhttp3.Request.Builder().url(url).build()).execute().use { r ->
+                if (!r.isSuccessful) throw java.io.IOException("Stream Master HTTP ${r.code}")
+                r.body?.string() ?: ""
+            }
+        } catch (e: java.io.IOException) {
+            if (e is java.net.UnknownHostException || e is java.net.ConnectException || e.cause is java.net.ConnectException) {
+                if (available()) com.lagradost.common.logging.AppLogger.i("StreamMaster: unreachable (${e::class.java.simpleName}), skipping it for 60 s")
+                downUntil = System.currentTimeMillis() + 60_000
+            }
+            throw e
         }
         val streams: JsonNode = mapper.readTree(body).path("streams")
         val out = ArrayList<ExtractorLink>()
