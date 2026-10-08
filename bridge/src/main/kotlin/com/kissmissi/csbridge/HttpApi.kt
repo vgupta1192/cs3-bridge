@@ -121,6 +121,7 @@ object HttpApi {
                 else -> sendJson(ex, 200, reposJson())
             }
             "breakers" -> sendJson(ex, 200, Streams.breakerState())
+            "warm" -> sendJson(ex, 200, Warmer.stats())
             "health" -> {
                 val started = Repos.startHealthCheck()
                 sendJson(ex, 200, mapOf("ok" to true, "running" to started))
@@ -272,12 +273,18 @@ object HttpApi {
         val id = URLDecoder.decode(segs.drop(3).joinToString("/").removeSuffix(".json"), "UTF-8")
         // keyed by config fingerprint: installs with identical settings share
         // one scrape and one cache entry
-        val cacheKey = "streams2:${Installs.fingerprint(segs[0])}:$kind:$id"
-        val cached = Store.get(cacheKey, 6L * 3600 * 1000)
+        val fp = Installs.fingerprint(segs[0])
+        val cacheKey = "streams2:$fp:$kind:$id"
+        Warmer.noteLive(fp, segs[0])
+        val cached = Store.get(cacheKey, Cfg.cacheMaxMs)
         if (cached != null) {
             val entry = runCatching { mapper.readValue<Map<String, Any?>>(cached) }.getOrNull() ?: mapOf("streams" to emptyList<Any?>())
+            val age = System.currentTimeMillis() - ((entry["ts"] as? Number)?.toLong() ?: 0L)
             if (entry["incomplete"] == true) {
                 Streams.rescrapeAsync(cfg, kind, id, cacheKey, entry)
+            } else if (age > Cfg.cacheStaleMs) {
+                // stale-while-revalidate: serve the older list now, refresh it behind
+                Streams.rescrapeAsync(cfg, kind, id, cacheKey)
             } else {
                 // degraded entries (scraped during a provider outage window) self-heal
                 Streams.maybeRescrapeDegraded(cfg, kind, id, cacheKey, entry)

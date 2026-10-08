@@ -22,6 +22,27 @@ object Cfg {
     // a provider rate-limit window used to serve its thin result as final for 6h)
     val rescrapeMinStreams: Int = System.getenv("CSBRIDGE_RESCRAPE_MIN_STREAMS")?.toIntOrNull() ?: 30
     val rescrapeMinAgeMs: Long = System.getenv("CSBRIDGE_RESCRAPE_MIN_AGE_MS")?.toLongOrNull() ?: (30L * 60 * 1000)
+    // priority lane: the first N providers of the user's order skip the queue;
+    // the answer goes out once this many of them returned this many links
+    val priorityCount: Int = System.getenv("CSBRIDGE_PRIORITY_COUNT")?.toIntOrNull() ?: 8
+    val priorityMinProviders: Int = System.getenv("CSBRIDGE_PRIORITY_MIN_PROVIDERS")?.toIntOrNull() ?: 2
+    val priorityMinStreams: Int = System.getenv("CSBRIDGE_PRIORITY_MIN_STREAMS")?.toIntOrNull() ?: 6
+    val priorityMinMs: Long = System.getenv("CSBRIDGE_PRIORITY_MIN_MS")?.toLongOrNull() ?: 2500L
+    // stream cache: served up to cacheMaxMs, refreshed in the background once older than cacheStaleMs
+    val cacheStaleMs: Long = System.getenv("CSBRIDGE_CACHE_STALE_MS")?.toLongOrNull() ?: (6L * 3600 * 1000)
+    val cacheMaxMs: Long = System.getenv("CSBRIDGE_CACHE_MAX_MS")?.toLongOrNull() ?: (26L * 3600 * 1000)
+    // catalog warmer (same catalogue addon and walk order as Stream Master)
+    val warmEnabled: Boolean = System.getenv("CSBRIDGE_WARM_ENABLED") != "false"
+    val warmCatalogUrl: String = (System.getenv("CSBRIDGE_WARM_CATALOG_URL") ?: "http://comprehensive-catalog:7005").trimEnd('/')
+    val warmTop: Int = System.getenv("CSBRIDGE_WARM_TOP")?.toIntOrNull() ?: 40
+    val warmWave: Int = System.getenv("CSBRIDGE_WARM_WAVE")?.toIntOrNull() ?: 20
+    val warmGroup: Int = System.getenv("CSBRIDGE_WARM_GROUP")?.toIntOrNull() ?: 3
+    val warmConcurrency: Int = System.getenv("CSBRIDGE_WARM_CONCURRENCY")?.toIntOrNull() ?: 2
+    val warmMaxConcurrent: Int = System.getenv("CSBRIDGE_WARM_MAX_CONCURRENT")?.toIntOrNull() ?: 12
+    val warmProviderTimeoutMs: Long = System.getenv("CSBRIDGE_WARM_PROVIDER_TIMEOUT_MS")?.toLongOrNull() ?: 60000L
+    val warmFreshMs: Long = System.getenv("CSBRIDGE_WARM_FRESH_MS")?.toLongOrNull() ?: (20L * 3600 * 1000)
+    val warmLiveQuietMs: Long = System.getenv("CSBRIDGE_WARM_LIVE_QUIET_MS")?.toLongOrNull() ?: 20000L
+    val warmCatalogFilter: Set<String> = (System.getenv("CSBRIDGE_WARM_CATALOGS") ?: "").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
     val tmdbKey: String? = System.getenv("TMDB_API_KEY")?.takeIf { it.isNotBlank() }
     val version: String = System.getenv("CSBRIDGE_VERSION") ?: "1.0.0"
 

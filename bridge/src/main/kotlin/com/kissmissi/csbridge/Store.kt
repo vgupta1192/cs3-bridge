@@ -40,6 +40,27 @@ object Store {
     }
 
 
+    /** (key, value) of every row whose key starts with [prefix] and is younger than [ttlMs]. */
+    fun listPrefix(prefix: String, ttlMs: Long): List<Pair<String, String>> = synchronized(db) {
+        db.prepareStatement("SELECT k, v FROM kv WHERE k LIKE ? AND ts >= ?").use { ps ->
+            ps.setString(1, "$prefix%")
+            ps.setLong(2, System.currentTimeMillis() - ttlMs)
+            ps.executeQuery().use { rs ->
+                val out = ArrayList<Pair<String, String>>()
+                while (rs.next()) out.add(rs.getString(1) to rs.getString(2))
+                out
+            }
+        }
+    }
+
+    /** Age in ms of a key, or null if absent. */
+    fun ageOf(k: String): Long? = synchronized(db) {
+        db.prepareStatement("SELECT ts FROM kv WHERE k = ?").use { ps ->
+            ps.setString(1, k)
+            ps.executeQuery().use { rs -> if (rs.next()) System.currentTimeMillis() - rs.getLong(1) else null }
+        }
+    }
+
     fun cleanup() {
         synchronized(db) {
             val cutoff = System.currentTimeMillis() - 14L * 24 * 3600 * 1000

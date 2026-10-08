@@ -340,7 +340,8 @@ object Streams {
         season: Int?,
         episode: Int?,
         matchUrl: String? = null,
-    ): ProviderOutcome = withTimeout(Cfg.providerTimeoutMs) {
+        timeoutMs: Long = Cfg.providerTimeoutMs,
+    ): ProviderOutcome = withTimeout(timeoutMs) {
         val url = matchUrl ?: run {
             val results = try {
                 prov.search(titleInfo?.name ?: "", 1)?.items ?: prov.search(titleInfo?.name ?: "") ?: emptyList()
@@ -481,6 +482,11 @@ object Streams {
         // an "incomplete" entry gets one rescrape per INCOMPLETE_RESCRAPE_MS, not one per tap
         val ts = (entry?.get("ts") as? Number)?.toLong() ?: 0L
         if (ts > 0L && System.currentTimeMillis() - ts < INCOMPLETE_RESCRAPE_MS) return
+        // one background refresh per key per INCOMPLETE_RESCRAPE_MS, even if it wrote nothing
+        val now = System.currentTimeMillis()
+        val last = lastBackground.put(cacheKey, now)
+        if (last != null && now - last < INCOMPLETE_RESCRAPE_MS) { lastBackground[cacheKey] = last; return }
+        if (lastBackground.size > 20000) lastBackground.clear()
         if (activeScrapes.putIfAbsent(cacheKey, true) != null) return
         scrapeScope.launch {
             try {
@@ -512,6 +518,28 @@ object Streams {
     /** Main entry: streams for a stremio-style request. Returns after the deadline; scraping continues detached. */
     private const val INCOMPLETE_RESCRAPE_MS = 5L * 60 * 1000
 
+    private val lastBackground = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** cacheKey -> background job that writes the full list (late merge). */
+    private val lateJobs = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
+
+    /** The user's top-ranked providers (configure-page order), lowercased labels. */
+    private fun priorityLabels(cfg: BridgeConfig): Set<String> =
+        cfg.order.take(Cfg.priorityCount).map { it.lowercase() }.toSet()
+
+    fun isScraping(cacheKey: String) = activeScrapes.containsKey(cacheKey) || lateJobs.containsKey(cacheKey)
+
+    /** Warmer entry: full scrape into the cache, returns when the full list is written. */
+    suspend fun warm(cfg: BridgeConfig, kind: String, id: String, cacheKey: String) {
+        if (isScraping(cacheKey) || activeScrapes.putIfAbsent(cacheKey, true) != null) return
+        try {
+            kotlinx.coroutines.withContext(Dispatchers.IO) { streamsForInternal(cfg, kind, id, cacheKey, respond = false, warm = true) }
+            lateJobs[cacheKey]?.join()
+        } finally {
+            activeScrapes.remove(cacheKey)
+        }
+    }
+
     fun streamsFor(cfg: BridgeConfig, kind: String, id: String, cacheKey: String? = null): List<Map<String, Any?>> {
         if (cacheKey == null) return streamsForInternal(cfg, kind, id, null, respond = true)
         val mine = java.util.concurrent.CompletableFuture<List<Map<String, Any?>>>()
@@ -540,9 +568,10 @@ object Streams {
         }
     }
 
-    private fun streamsForInternal(cfg: BridgeConfig, kind: String, id: String, cacheKey: String?, respond: Boolean): List<Map<String, Any?>> {
+    private fun streamsForInternal(cfg: BridgeConfig, kind: String, id: String, cacheKey: String?, respond: Boolean, warm: Boolean = false): List<Map<String, Any?>> {
         val t0 = System.currentTimeMillis()
         val deadline = cfg.deadlineMs ?: Cfg.deadlineMs
+        val priority = priorityLabels(cfg)
         val channel = Channel<Triple<String, String?, List<ExtractorLink>>>(Channel.UNLIMITED)
         val collected = ArrayList<Triple<String, String?, List<ExtractorLink>>>()
         val ctxRef = java.util.concurrent.atomic.AtomicReference<FmtCtx?>(null)
@@ -552,7 +581,7 @@ object Streams {
 
         if (cacheKey != null) activeScrapes[cacheKey] = true
         val parent = scrapeScope.launch {
-            fetchAll(cfg, kind, id, channel, ctxRef, noAttempt)
+            fetchAll(cfg, kind, id, channel, ctxRef, noAttempt, warm, priority)
             channel.close()
         }
         parent.invokeOnCompletion { if (cacheKey != null) activeScrapes.remove(cacheKey) }
@@ -569,6 +598,14 @@ object Streams {
                 // Both gates count: enough links AND enough distinct providers
                 // (one chatty fast provider must not own the whole first page)
                 val elapsed = System.currentTimeMillis() - start
+                // priority lane: once enough of the user's top-ranked providers
+                // have answered with links, serve straight away
+                if (respond && priority.isNotEmpty() && elapsed >= Cfg.priorityMinMs) {
+                    val (n, pdone) = synchronized(collected) {
+                        collected.sumOf { it.third.size } to collected.map { it.first.lowercase() }.filter { it in priority }.distinct().size
+                    }
+                    if (pdone >= Cfg.priorityMinProviders && n >= Cfg.priorityMinStreams) break
+                }
                 if (elapsed >= Cfg.fastWindowMs) {
                     val (n, provs) = synchronized(collected) {
                         collected.sumOf { it.third.size } to collected.map { it.first }.distinct().size
@@ -586,8 +623,10 @@ object Streams {
         val result = buildResult(cfg, collected, ctxRef.get())
         AppLogger.i("Streams: $kind/$id -> ${result.size} streams in ${System.currentTimeMillis() - t0} ms (scrape complete=${parent.isCompleted})")
 
-        if (cacheKey != null) {
-            // cache what we have now, marking whether stragglers are still running
+        if (cacheKey != null && respond) {
+            // cache what we have now, marking whether stragglers are still running.
+            // Background (re)scrapes and the warmer only write the full list, so a
+            // partial never replaces a good older entry.
             runCatching {
                 Store.put(cacheKey, mapper.writeValueAsString(mapOf("streams" to result, "incomplete" to !parent.isCompleted, "ts" to System.currentTimeMillis())))
             }
@@ -596,7 +635,7 @@ object Streams {
         // slow providers keep scraping in the background; when they finish, merge
         // their late results into the cache so the next tap shows the full list
         if (cacheKey != null) {
-            scrapeScope.launch {
+            lateJobs[cacheKey] = scrapeScope.launch {
                 runCatching {
                     // drain until the fan-out closes the channel (its phases are
                     // wall-clock capped). The old 30 s-lull exit left entries
@@ -616,9 +655,10 @@ object Streams {
                         // still running - keep the incomplete flag honest so the
                         // next request can still trigger one deduped rescrape
                         Store.put(cacheKey, mapper.writeValueAsString(mapOf("streams" to full, "incomplete" to !parent.isCompleted, "ts" to System.currentTimeMillis())))
-                        AppLogger.i("Streams: $kind/$id late merge -> ${full.size} streams (cache updated, scrape complete=${parent.isCompleted})")
+                        AppLogger.i("Streams: $kind/$id ${if (warm) "warm" else "late merge"} -> ${full.size} streams (cache updated, scrape complete=${parent.isCompleted})")
                     }
                 }
+                lateJobs.remove(cacheKey)
             }
         }
         return result
@@ -697,14 +737,20 @@ object Streams {
         channel: Channel<Triple<String, String?, List<ExtractorLink>>>,
         ctxRef: java.util.concurrent.atomic.AtomicReference<FmtCtx?>,
         noAttempt: java.util.concurrent.atomic.AtomicBoolean,
+        warm: Boolean = false,
+        priority: Set<String> = emptySet(),
     ) {
-        val sem = Semaphore(Cfg.maxConcurrent)
+        // the warmer gets a smaller lane and shorter provider timeout so it never
+        // crowds out a live request
+        val sem = Semaphore(if (warm) Cfg.warmMaxConcurrent else Cfg.maxConcurrent)
+        val provTimeout = if (warm) Cfg.warmProviderTimeoutMs else Cfg.providerTimeoutMs
         val attempted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val succeeded = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val noContent = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val failed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val errorSamples = java.util.concurrent.ConcurrentHashMap<String, String>()
         val retryDefs = java.util.concurrent.ConcurrentHashMap<String, Triple<String, String?, suspend () -> ProviderOutcome>>()
+        val okTimes = java.util.concurrent.ConcurrentHashMap<String, Long>()
         // only transient failures (timeouts, network errors) are worth a second wave
         val retryable = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
@@ -712,8 +758,12 @@ object Streams {
             attempted.add(key)
             scope.launch(scrapeDispatcher) {
                 try {
-                    sem.acquire()
+                    // priority lane: the user's top providers start at once
+                    // instead of queueing behind the semaphore
+                    val lane = !warm && (label.lowercase() in priority || key.substringBefore('#').lowercase() in priority)
+                    if (!lane) sem.acquire()
                     try {
+                        val tStart = System.currentTimeMillis()
                         val res = try {
                             work()
                         } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
@@ -726,6 +776,7 @@ object Streams {
                         val bname = key.removeSuffix(":r")
                         if (res.links.isNotEmpty()) {
                             succeeded.add(key)
+                            okTimes.merge(label, System.currentTimeMillis() - tStart) { a, b -> minOf(a, b) }
                             breakerResult(bname, true)
                             channel.send(Triple(label, lang, res.links))
                         } else if (res.error != null) {
@@ -746,7 +797,7 @@ object Streams {
                             breakerResult(bname, true)
                         }
                     } finally {
-                        sem.release()
+                        if (!lane) sem.release()
                     }
                 } catch (_: Throwable) {
                 }
@@ -820,9 +871,9 @@ object Streams {
                         for ((info, prov) in pairs) {
                             val key = info.internalName + "#" + System.identityHashCode(prov)
                             val plang = info.language ?: prov.lang
-                            retryDefs[key] = Triple(info.name, plang) { scrapeProvider(prov, titleInfo, requestedS, requestedE) }
+                            retryDefs[key] = Triple(info.name, plang) { scrapeProvider(prov, titleInfo, requestedS, requestedE, timeoutMs = provTimeout) }
                             launchProvider(this, info.name, key, plang) {
-                                scrapeProvider(prov, titleInfo, requestedS, requestedE)
+                                scrapeProvider(prov, titleInfo, requestedS, requestedE, timeoutMs = provTimeout)
                             }
                         }
                     }
@@ -839,7 +890,7 @@ object Streams {
             // Retry ONLY providers that FAILED (threw / timed out / null load) -
             // providers that searched fine and have no content are not retried.
             fanOutSummary(kind, id, "pass1", attempted, succeeded, noContent, failed, errorSamples)
-            val toRetry = failed.filter { it in retryable && !breakerOpen(it) }
+            val toRetry = if (warm) emptyList() else failed.filter { it in retryable && !breakerOpen(it) }
             if (toRetry.isNotEmpty()) {
                 AppLogger.i("Streams: retrying ${toRetry.size} of ${failed.size} failed providers (transient errors only)")
                 fanOutPhase(Cfg.providerTimeoutMs + 30_000, "$kind/$id", "retry") {
@@ -855,6 +906,8 @@ object Streams {
         }
 
         fanOutSummary(kind, id, "done", attempted, succeeded, noContent, failed, errorSamples)
+        if (okTimes.isNotEmpty()) AppLogger.i("Streams:   ok in: " + okTimes.entries.sortedBy { it.value }
+            .joinToString(", ") { "${it.key} ${it.value / 1000}s" })
     }
 
     /** Run one fan-out phase (a coroutineScope whose children are provider scrapes)

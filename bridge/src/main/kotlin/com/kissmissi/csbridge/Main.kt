@@ -15,6 +15,7 @@ fun main() {
     }
     HttpApi.start()
     Repos.startBackgroundSync()
+    Warmer.start()
     Thread {
         runCatching { Formatter.warmup() }
             .onFailure { AppLogger.e("formatter warmup failed: ${it.message}") }
