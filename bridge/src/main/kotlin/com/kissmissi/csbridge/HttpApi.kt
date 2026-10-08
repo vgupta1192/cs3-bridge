@@ -132,6 +132,26 @@ object HttpApi {
                 }.apply { isDaemon = true; name = "manual-resync" }.start()
                 sendJson(ex, 200, mapOf("ok" to true, "message" to "resync started"))
             }
+            "installs" -> {
+                // stable per-install config: GET = what the configure page shows,
+                // POST = save (from then on decode() prefers the stored config,
+                // so the manifest URL never changes again)
+                val id = segs.getOrNull(2) ?: return sendJson(ex, 404, mapOf("error" to "install id required"))
+                if (ex.requestMethod.equals("POST", ignoreCase = true)) {
+                    val body = ex.requestBody.readBytes().toString(Charsets.UTF_8)
+                    val (ok, msg) = Installs.save(id, body)
+                    if (ok) {
+                        // config changed: this install's cached streams/catalogs
+                        // no longer match
+                        Store.deletePrefix("streams2:$id:")
+                        Store.deletePrefix("catalog:$id:")
+                    }
+                    sendJson(ex, 200, mapOf("ok" to ok, "message" to msg))
+                } else {
+                    val stored = Installs.load(id)
+                    sendJson(ex, 200, mapOf("ok" to true, "installed" to (stored != null), "config" to (stored?.let { runCatching { mapper.readValue<Map<String, Any?>>(it) }.getOrNull() })))
+                }
+            }
             "formatter" -> when (segs.getOrNull(2)) {
                 "presets" -> sendJson(ex, 200, Formatter.presets())
                 "preview" -> {

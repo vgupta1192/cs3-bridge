@@ -69,29 +69,46 @@ class BridgeConfig(
     val blockCam: Boolean = false,
     val fmt: FmtCfg = FmtCfg(),
     val order: List<String> = emptyList(),
+    // preferred stream languages in priority order (empty = no language
+    // sorting/filtering); langFilter: 0 off, 1 drop non-matching but keep
+    // unknown-language streams, 2 drop unknown too
+    val langs: List<String> = emptyList(),
+    val langFilter: Int = 0,
 ) {
     companion object {
         val CORE_REPOS = setOf("CNC Repo (All Language)", "Phisher Repo", "Megix Repo (Hindi & English)", "raghav repo")
 
+        private fun fromMap(root: Map<*, *>): BridgeConfig {
+            val p = (root["p"] as? Map<*, *>)?.filterValues { (it as? Number)?.toInt() != 0 }
+                ?.keys?.map { it.toString() }?.toSet() ?: emptySet()
+            val q = root["q"] as? Map<*, *>
+            val qual = (q?.get("on") as? List<*>)?.mapNotNull { (it as? Number)?.toInt() }?.toSet()
+                ?: setOf(2160, 1080, 720, 480, 360)
+            return BridgeConfig(
+                p, (root["c"] as? Number)?.toInt() == 1, (root["m"] as? Number)?.toInt() == 1,
+                (root["d"] as? Number)?.toLong(),
+                qual,
+                (q?.get("tier") as? Number)?.toInt() ?: 0,
+                (q?.get("cam") as? Number)?.toInt() == 1,
+                FmtCfg.fromRaw(root["fmt"]),
+                (root["order"] as? List<*>)?.map { it.toString() } ?: emptyList(),
+                (root["lg"] as? List<*>)?.filterIsInstance<String>() ?: emptyList(),
+                (root["lgf"] as? Number)?.toInt() ?: 0,
+            )
+        }
+
         fun decode(s: String): BridgeConfig {
+            // 1) server-side install record (the configure page POSTs it; once
+            //    it exists the stored config IS the install and the URL never
+            //    needs to change again)
+            Installs.load(s)?.let { stored ->
+                runCatching { return fromMap(jacksonObjectMapper().readValue<Map<String, Any>>(stored)) }
+            }
+            // 2) legacy: the config embedded in the URL segment itself
             return try {
                 val fixed = s.replace('-', '+').replace('_', '/') + "=".repeat((4 - s.length % 4) % 4)
                 val json = String(Base64.getDecoder().decode(fixed))
-                val root = jacksonObjectMapper().readValue<Map<String, Any>>(json)
-                val p = (root["p"] as? Map<*, *>)?.filterValues { (it as? Number)?.toInt() != 0 }
-                    ?.keys?.map { it.toString() }?.toSet() ?: emptySet()
-                val q = root["q"] as? Map<*, *>
-                val qual = (q?.get("on") as? List<*>)?.mapNotNull { (it as? Number)?.toInt() }?.toSet()
-                    ?: setOf(2160, 1080, 720, 480, 360)
-                BridgeConfig(
-                    p, (root["c"] as? Number)?.toInt() == 1, (root["m"] as? Number)?.toInt() == 1,
-                    (root["d"] as? Number)?.toLong(),
-                    qual,
-                    (q?.get("tier") as? Number)?.toInt() ?: 0,
-                    (q?.get("cam") as? Number)?.toInt() == 1,
-                    FmtCfg.fromRaw(root["fmt"]),
-                    (root["order"] as? List<*>)?.map { it.toString() } ?: emptyList(),
-                )
+                fromMap(jacksonObjectMapper().readValue<Map<String, Any>>(json))
             } catch (e: Exception) {
                 BridgeConfig(
                     Repos.plugins.values.filter { it.loaded && it.repo in CORE_REPOS }.map { it.internalName }.toSet(),
@@ -152,6 +169,37 @@ object Streams {
     }
 
     private val camRegex = Regex("(?i)\\b(cam|hdcam|hd-cam|hdts|telecine|telesync|screener|ts)\\b")
+
+    // languages recognised in link text for the language filter/sort — same
+    // names the formatter glue uses so cfg.langs matches {stream.languages}
+    private val LANG_NAMES = listOf(
+        "Hindi", "English", "Tamil", "Telugu", "Malayalam", "Kannada", "Bengali", "Punjabi",
+        "Marathi", "Japanese", "Korean", "Chinese", "Spanish", "French", "German", "Turkish",
+        "Arabic", "Portuguese", "Russian", "Italian", "Indonesian", "Thai", "Vietnamese", "Urdu",
+    )
+    private val LANG_BY_CODE = mapOf(
+        "hi" to "Hindi", "en" to "English", "ta" to "Tamil", "te" to "Telugu", "ml" to "Malayalam",
+        "kn" to "Kannada", "bn" to "Bengali", "pa" to "Punjabi", "mr" to "Marathi", "ja" to "Japanese",
+        "ko" to "Korean", "zh" to "Chinese", "es" to "Spanish", "fr" to "French", "de" to "German",
+        "tr" to "Turkish", "ar" to "Arabic", "pt" to "Portuguese", "ru" to "Russian", "it" to "Italian",
+        "id" to "Indonesian", "th" to "Thai", "vi" to "Vietnamese", "ur" to "Urdu",
+    )
+
+    /** Languages of a link for filtering/sorting: explicit tokens in the link
+     *  text win, then a dub track on a foreign provider = English, then the
+     *  provider's primary language (mirrors csb-glue langOf()). */
+    private fun linkLanguages(link: ExtractorLink, providerLang: String?): List<String> {
+        val filename = runCatching {
+            val f = java.net.URL(link.url).file.substringBefore('?').substringBefore('#')
+            java.net.URLDecoder.decode(f.substringAfterLast('/'), "UTF-8")
+        }.getOrNull() ?: ""
+        val text = "${link.name} ${link.source} $filename"
+        val parsed = LANG_NAMES.filter { Regex("\\b${it}\\b", RegexOption.IGNORE_CASE).containsMatchIn(text) }
+        if (parsed.isNotEmpty()) return parsed
+        if (Regex("""\bdubs?\b|\bdubbed\b""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return listOf("English")
+        val code = providerLang?.substringBefore('-')?.lowercase() ?: ""
+        return LANG_BY_CODE[code]?.let { listOf(it) } ?: emptyList()
+    }
 
     private fun isCam(link: ExtractorLink): Boolean =
         camRegex.containsMatchIn(link.name) || camRegex.containsMatchIn(link.source) || (link.quality in 1..479 && camRegex.containsMatchIn(link.url))
@@ -437,7 +485,7 @@ object Streams {
     }
 
     private fun buildResult(cfg: BridgeConfig, collected: List<Triple<String, String?, List<ExtractorLink>>>, ctx: FmtCtx?): List<Map<String, Any?>> {
-        data class Row(val stream: Map<String, Any?>, val label: String, val link: ExtractorLink)
+        data class Row(val stream: Map<String, Any?>, val label: String, val lang: String?, val link: ExtractorLink)
         // one templates lookup per serve; null = built-in naming everywhere
         val templates = runCatching { Formatter.templates(cfg.fmt.f, cfg.fmt.n, cfg.fmt.d) }.getOrNull()
         val rank = cfg.order.withIndex().associate { it.value.lowercase() to it.index }
@@ -476,9 +524,20 @@ object Streams {
             } else {
                 formatted[i]?.let { streamFromRendered(it, cand.link, cand.label) } ?: toStremioStream(cand.link, cand.label, cfg)
             } ?: return@forEachIndexed
-            rows.add(Row(st, cand.label, cand.link))
+            rows.add(Row(st, cand.label, cand.lang, cand.link))
         }
         rows.sortBy { rank[it.label.lowercase()] ?: 1000 }
+        if (cfg.langs.isNotEmpty()) {
+            // stable sort: preferred languages first, provider order kept within
+            // the same language rank; unknown-language streams rank last
+            rows = ArrayList(rows.sortedBy { linkLanguages(it.link, it.lang).minOfOrNull { l -> cfg.langs.indexOf(l).takeIf { i -> i >= 0 } } ?: Int.MAX_VALUE })
+            if (cfg.langFilter > 0) {
+                rows = ArrayList(rows.filter { row ->
+                    val ls = linkLanguages(row.link, row.lang)
+                    if (ls.isEmpty()) cfg.langFilter == 1 else ls.any { cfg.langs.contains(it) }
+                })
+            }
+        }
         if (cfg.maxPerTier > 0) {
             val counts = HashMap<Int, Int>()
             rows = ArrayList(rows.filter {

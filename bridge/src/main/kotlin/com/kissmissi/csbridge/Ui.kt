@@ -235,6 +235,16 @@ textarea.tpl.small { min-height:64px; }
         <div class="note">Unknown-quality streams are always kept.</div>
       </section>
       <section class="card">
+        <div class="sec-head"><div class="sec-title">Stream languages<small id="lgLabel"></small></div></div>
+        <div class="psub" style="margin-bottom:10px">Pick your preferred languages — streams are sorted best-language first (provider order kept within a language). Filtering drops streams in other languages; unknown-language streams can be kept.</div>
+        <div class="chiprow" id="lgChips" style="margin-bottom:8px"></div>
+        <div id="lgSel"></div>
+        <div class="opt-row" style="margin-top:8px">
+          <div><div class="nm">Drop non-matching languages</div><div class="ds">Off = sort only. Keep unknown = drop other languages but keep streams with unknown audio. Strict = drop unknown too.</div></div>
+          <select id="lg-f"><option value="0">Off (sort only)</option><option value="1">Keep unknown</option><option value="2">Strict</option></select>
+        </div>
+      </section>
+      <section class="card">
         <div class="sec-head"><div class="sec-title">Filtering &amp; playback</div></div>
         <div class="opt-row">
           <div><div class="nm">Max streams per quality tier</div><div class="ds">After provider ordering, keep at most N streams per tier (4K / 1080p / …). 0 = unlimited.</div></div>
@@ -375,11 +385,26 @@ let DATA = null;
 // dl = search deadline; d = formatter description template. They used to share
 // one key (state.d) — editing the deadline clobbered the description and the
 // deadline itself never reached the generated URL
-let state = { p: {}, c: true, m: false, dl: 25000, q: { on: [2160,1080,720,480,360], tier: 0, cam: 0 }, f: 'builtin', n: '', d: '', order: [] };
+let state = { p: {}, c: true, m: false, dl: 25000, q: { on: [2160,1080,720,480,360], tier: 0, cam: 0 }, f: 'builtin', n: '', d: '', order: [], lg: [], lgf: 0 };
 const B64 = s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const UNB64 = s => decodeURIComponent(escape(atob(s.replace(/-/g,'+').replace(/_/g,'/') + '='.repeat((4 - s.length % 4) % 4))));
 const THEMES = ['slate','charcoal','navy','forest'];
 try { const s = localStorage.getItem('csb_state2'); if (s) state = Object.assign(state, JSON.parse(s)); } catch(e) {}
+if (!Array.isArray(state.lg)) state.lg = [];
+// ---------- install identity ----------
+// The manifest URL carries a stable install id, not the config itself: the
+// first save pins the config server-side (/api/installs/<id>) and from then on
+// every configure-page change applies to the ALREADY INSTALLED addon — no
+// re-adding. Nuvio picks manifest-visible changes up on its next manifest
+// refetch; stream behavior changes immediately.
+let INSTALL = null;
+let FROM_URL = false;
+(function pickInstall() {
+  const m = location.pathname.match(/^\/([A-Za-z0-9_-]+)\/configure\/?$/);
+  if (m) { INSTALL = m[1]; FROM_URL = true; return; }
+  INSTALL = localStorage.getItem('csb_install');
+  if (!INSTALL) { INSTALL = 'i' + Math.random().toString(36).slice(2, 12); localStorage.setItem('csb_install', INSTALL); }
+})();
 // migrate the pre-AIOStreams formatter keys to the preset/custom scheme
 (function migrateFmt() {
   if (state.fmt !== undefined) {
@@ -399,38 +424,6 @@ try { const s = localStorage.getItem('csb_state2'); if (s) state = Object.assign
   // deadline/description split: an old numeric state.d was the deadline
   if (typeof state.d === 'number' || (typeof state.d === 'string' && /^\d+$/.test(state.d))) { state.dl = parseInt(state.d); state.d = ''; }
   if (!state.dl) state.dl = 25000;
-})();
-// opened as /<config>/configure (Nuvio's Configure button): import the URL's
-// config so the page shows the installed selection instead of localStorage
-(function importUrlCfg() {
-  const m = location.pathname.match(/^\/([A-Za-z0-9_-]+)\/configure\/?$/);
-  if (!m) return;
-  try {
-    const cfg = JSON.parse(UNB64(m[1]));
-    if (!cfg || typeof cfg !== 'object' || !cfg.p || typeof cfg.p !== 'object') return;
-    const p = {};
-    Object.keys(cfg.p).forEach(k => { if (cfg.p[k]) p[k] = 1; });
-    state.p = p;
-    if (cfg.c !== undefined) state.c = cfg.c == 1;
-    if (cfg.m !== undefined) state.m = cfg.m == 1;
-    if (typeof cfg.d === 'number') state.dl = cfg.d;
-    if (cfg.q) {
-      if (Array.isArray(cfg.q.on) && cfg.q.on.length) state.q.on = cfg.q.on.map(Number).filter(n => n > 0);
-      if (cfg.q.tier !== undefined) state.q.tier = Number(cfg.q.tier) || 0;
-      if (cfg.q.cam !== undefined) state.q.cam = cfg.q.cam == 1 ? 1 : 0;
-    }
-    if (Array.isArray(cfg.order)) state.order = cfg.order.filter(x => typeof x === 'string');
-    if (typeof cfg.fmt === 'string') {
-      if (cfg.fmt === 'modern') state.f = 'csb-modern';
-      else if (cfg.fmt === 'minimal') state.f = 'csb-minimal';
-      else if (cfg.fmt.startsWith('custom:')) { const parts = cfg.fmt.slice(7).split('|'); state.f = 'custom'; state.n = parts[0] || ''; state.d = parts[1] || ''; }
-    } else if (cfg.fmt && typeof cfg.fmt === 'object') {
-      if (cfg.fmt.f) state.f = String(cfg.fmt.f);
-      if (typeof cfg.fmt.n === 'string') state.n = cfg.fmt.n;
-      if (typeof cfg.fmt.d === 'string') state.d = cfg.fmt.d;
-    }
-    save();
-  } catch(e) {}
 })();
 document.documentElement.dataset.baseTheme = localStorage.getItem('csb_theme') || 'slate';
 document.getElementById('themeLabel').textContent = 'Theme: ' + document.documentElement.dataset.baseTheme.charAt(0).toUpperCase() + document.documentElement.dataset.baseTheme.slice(1);
@@ -452,16 +445,55 @@ function allPlugins(){ return (DATA&&DATA.repos||[]).flatMap(r => r.plugins); }
 function repoOf(p){ return ((DATA&&DATA.repos)||[]).find(r => r.plugins.indexOf(p) >= 0); }
 
 // ---------- state <-> UI ----------
-function save(){ localStorage.setItem('csb_state2', JSON.stringify(state)); }
-function gen() {
+function save(){ localStorage.setItem('csb_state2', JSON.stringify(state)); schedulePush(); }
+function importCfgObject(cfg) {
+  if (!cfg || typeof cfg !== 'object' || !cfg.p || typeof cfg.p !== 'object') return false;
+  const p = {};
+  Object.keys(cfg.p).forEach(k => { if (cfg.p[k]) p[k] = 1; });
+  state.p = p;
+  if (cfg.c !== undefined) state.c = cfg.c == 1;
+  if (cfg.m !== undefined) state.m = cfg.m == 1;
+  if (typeof cfg.d === 'number') state.dl = cfg.d;
+  if (cfg.q) {
+    if (Array.isArray(cfg.q.on) && cfg.q.on.length) state.q.on = cfg.q.on.map(Number).filter(n => n > 0);
+    if (cfg.q.tier !== undefined) state.q.tier = Number(cfg.q.tier) || 0;
+    if (cfg.q.cam !== undefined) state.q.cam = cfg.q.cam == 1 ? 1 : 0;
+  }
+  if (Array.isArray(cfg.order)) state.order = cfg.order.filter(x => typeof x === 'string');
+  if (Array.isArray(cfg.lg)) state.lg = cfg.lg.filter(x => typeof x === 'string');
+  if (cfg.lgf !== undefined) state.lgf = Number(cfg.lgf) || 0;
+  if (typeof cfg.fmt === 'string') {
+    if (cfg.fmt === 'modern') state.f = 'csb-modern';
+    else if (cfg.fmt === 'minimal') state.f = 'csb-minimal';
+    else if (cfg.fmt.startsWith('custom:')) { const parts = cfg.fmt.slice(7).split('|'); state.f = 'custom'; state.n = parts[0] || ''; state.d = parts[1] || ''; }
+  } else if (cfg.fmt && typeof cfg.fmt === 'object') {
+    if (cfg.fmt.f) state.f = String(cfg.fmt.f);
+    if (typeof cfg.fmt.n === 'string') state.n = cfg.fmt.n;
+    if (typeof cfg.fmt.d === 'string') state.d = cfg.fmt.d;
+  }
+  return true;
+}
+function buildCfg() {
   const cfg = Object.assign({}, state);
   delete cfg.f; delete cfg.n; delete cfg.d; delete cfg.dl;
   delete cfg.fmt; delete cfg.fmtName; delete cfg.fmtTitle;
   if (state.f === 'custom') cfg.fmt = { f: 'custom', n: state.n || '', d: state.d || '' };
   else if (state.f && state.f !== 'builtin') cfg.fmt = { f: state.f };
   if (state.dl) cfg.d = state.dl;
-  const url = location.origin + '/' + B64(JSON.stringify(cfg)) + '/manifest.json';
-  document.getElementById('murl').value = url;
+  if (!Array.isArray(cfg.lg) || !cfg.lg.length) delete cfg.lg;
+  if (!cfg.lgf) delete cfg.lgf;
+  return cfg;
+}
+// every change lands on the backend so the installed manifest URL never changes
+let pushTimer = null;
+function schedulePush(){ clearTimeout(pushTimer); pushTimer = setTimeout(pushInstall, 600); }
+function pushInstall(){
+  clearTimeout(pushTimer);
+  try { return fetch('/api/installs/' + INSTALL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(buildCfg()) }); }
+  catch(e) { return Promise.resolve(); }
+}
+function gen() {
+  document.getElementById('murl').value = location.origin + '/' + INSTALL + '/manifest.json';
 }
 
 // ---------- HOME ----------
@@ -508,6 +540,28 @@ function updateStats() {
   document.getElementById('st-av').textContent = all.filter(p => p.loaded).length + ' / ' + all.length;
   document.getElementById('st-repos').textContent = (DATA&&DATA.repos||[]).length;
 }
+// HTML5 drag-and-drop reorder for .order-row children (arrows stay as the
+// touch/TV fallback)
+function enableDrag(container, onReorder) {
+  let dragIdx = null;
+  Array.from(container.children).forEach(row => {
+    if (!row.classList || !row.classList.contains('order-row')) return;
+    row.draggable = true;
+    row.addEventListener('dragstart', e => {
+      dragIdx = +row.dataset.drag; row.style.opacity = '.4';
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', row.dataset.drag); } catch(err) {}
+    });
+    row.addEventListener('dragend', () => { dragIdx = null; row.style.opacity = ''; });
+    row.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; });
+    row.addEventListener('drop', e => {
+      e.preventDefault();
+      const to = +row.dataset.drag;
+      if (dragIdx === null || isNaN(dragIdx) || dragIdx === to) return;
+      onReorder(dragIdx, to); dragIdx = null;
+    });
+  });
+}
 function renderFiltersPage() {
   const list = document.getElementById('orderList');
   list.innerHTML = '';
@@ -517,13 +571,17 @@ function renderFiltersPage() {
   const full = ordered.concat(rest);
   state.order = full.map(p => p.name);
   full.forEach((p, i) => {
-    const row = document.createElement('div'); row.className = 'order-row';
+    const row = document.createElement('div'); row.className = 'order-row'; row.dataset.drag = i;
     row.innerHTML = '<div class="grow">' + (i+1) + '. ' + esc(p.name) + '</div>';
     const up = document.createElement('button'); up.className='arrow'; up.textContent='↑';
     const dn = document.createElement('button'); dn.className='arrow'; dn.textContent='↓';
     up.onclick = () => { if (i > 0) { const a = state.order; const t = a[i-1]; a[i-1] = a[i]; a[i] = t; save(); renderFiltersPage(); } };
     dn.onclick = () => { const a = state.order; if (i < a.length-1) { const t = a[i+1]; a[i+1] = a[i]; a[i] = t; save(); renderFiltersPage(); } };
     row.append(up, dn); list.append(row);
+  });
+  enableDrag(list, (from, to) => {
+    const a = state.order.slice(); const m = a.splice(from,1)[0]; a.splice(to,0,m);
+    state.order = a; save(); renderFiltersPage();
   });
   // quality chips state
   [2160,1080,720,480,360].forEach(t => { const el = document.getElementById('q-'+t); el.checked = state.q.on.indexOf(t) >= 0; });
@@ -532,6 +590,45 @@ function renderFiltersPage() {
   document.getElementById('opt-cam').checked = !!state.q.cam;
   document.getElementById('opt-m').checked = !!state.m;
   document.getElementById('opt-d').value = String(state.dl || 25000);
+}
+// ---------- languages (filter + priority sort) ----------
+const LG_LIST = ['Hindi','English','Tamil','Telugu','Malayalam','Kannada','Bengali','Punjabi','Marathi','Japanese','Chinese','Korean','Spanish','Arabic','Turkish','French','German','Russian','Portuguese','Italian'];
+function renderLanguagesPage() {
+  const chips = document.getElementById('lgChips');
+  if (!chips.children.length) {
+    LG_LIST.forEach(l => {
+      const b = document.createElement('button'); b.className = 'chipbtn'; b.textContent = l; b.dataset.lg = l;
+      b.onclick = () => {
+        const i = state.lg.indexOf(l);
+        if (i >= 0) state.lg.splice(i, 1); else state.lg.push(l);
+        save(); renderLanguagesPage();
+      };
+      chips.append(b);
+    });
+  }
+  chips.querySelectorAll('[data-lg]').forEach(b => b.classList.toggle('sel', state.lg.indexOf(b.dataset.lg) >= 0));
+  const sel = document.getElementById('lgSel');
+  sel.innerHTML = '';
+  if (state.lg.length) {
+    const lab = document.createElement('div'); lab.className = 'famlab'; lab.textContent = 'Priority — drag or use arrows, best language first'; sel.append(lab);
+    state.lg.forEach((l, i) => {
+      const row = document.createElement('div'); row.className = 'order-row'; row.dataset.drag = i;
+      row.innerHTML = '<div class="grow">' + (i+1) + '. ' + esc(l) + '</div>';
+      const up = document.createElement('button'); up.className='arrow'; up.textContent='↑';
+      const dn = document.createElement('button'); dn.className='arrow'; dn.textContent='↓';
+      up.onclick = () => { if (i > 0) { const t = state.lg[i-1]; state.lg[i-1] = state.lg[i]; state.lg[i] = t; save(); renderLanguagesPage(); } };
+      dn.onclick = () => { if (i < state.lg.length-1) { const t = state.lg[i+1]; state.lg[i+1] = state.lg[i]; state.lg[i] = t; save(); renderLanguagesPage(); } };
+      row.append(up, dn); sel.append(row);
+    });
+    enableDrag(sel, (from, to) => {
+      const m = state.lg.splice(from,1)[0]; state.lg.splice(to,0,m);
+      save(); renderLanguagesPage();
+    });
+  }
+  document.getElementById('lg-f').value = String(state.lgf || 0);
+  document.getElementById('lgLabel').textContent = state.lg.length
+    ? (state.lg[0] + ' first' + (state.lgf ? (state.lgf === 2 ? ' · strict filter' : ' · filtering, unknown kept') : ''))
+    : 'none picked (no language sort/filter)';
 }
 // ---------- formatter (AIOStreams engine, presets + custom + preview) ----------
 let PRESETS = [];
@@ -698,7 +795,7 @@ function renderRepos() {
   });
   document.getElementById('repoCount').textContent = (DATA.repos||[]).length + ' repos';
 }
-function renderAll() { renderGrid(); renderFiltersPage(); renderStatus(); renderRepos(); gen(); }
+function renderAll() { renderGrid(); renderFiltersPage(); renderLanguagesPage(); renderStatus(); renderRepos(); gen(); }
 
 // ---------- wiring ----------
 document.getElementById('filter').oninput = renderGrid;
@@ -733,6 +830,7 @@ document.getElementById('opt-cam').onchange = e => { state.q.cam = e.target.chec
 document.getElementById('opt-c').onchange = e => { state.c = e.target.checked; save(); gen(); };
 document.getElementById('opt-m').onchange = e => { state.m = e.target.checked; save(); gen(); };
 document.getElementById('opt-d').onchange = e => { state.dl = parseInt(e.target.value); save(); gen(); };
+document.getElementById('lg-f').onchange = e => { state.lgf = parseInt(e.target.value); save(); gen(); };
 document.getElementById('order-reset').onclick = () => { state.order = []; save(); renderFiltersPage(); gen(); };
 document.getElementById('resync').onclick = () => {
   const b = document.getElementById('resync'); b.disabled = true; b.innerHTML = '<span class="spin"></span> syncing…';
@@ -748,6 +846,7 @@ document.getElementById('add-btn').onclick = () => {
     .then(r => r.json()).then(d => { document.getElementById('addMsg').textContent = d.message; if (d.ok) { document.getElementById('add-url').value = ''; document.getElementById('add-name').value = ''; poll(); } });
 };
 document.getElementById('copy').onclick = () => {
+  pushInstall();  // make sure the backend has the config before they paste it
   const v = document.getElementById('murl').value;
   (navigator.clipboard ? navigator.clipboard.writeText(v) : Promise.reject()).then(() => {
     const b = document.getElementById('copy'); const t = b.textContent; b.textContent = '✅ Copied!';
@@ -758,11 +857,25 @@ document.getElementById('open').onclick = () => window.open(document.getElementB
 
 async function boot() {
   document.getElementById('syncLine').innerHTML = '<span class="spin"></span> loading…';
+  if (FROM_URL) {
+    // opened from the installed addon's Configure button: the server record is
+    // the source of truth; a legacy URL whose config is still only embedded in
+    // the b64 segment is the fallback (it gets pinned on the first save)
+    let imported = false;
+    try {
+      const r = await fetch('/api/installs/' + INSTALL); const d = await r.json();
+      if (d && d.config) imported = importCfgObject(d.config);
+    } catch(e) {}
+    if (!imported) {
+      const m = location.pathname.match(/^\/([A-Za-z0-9_-]+)\/configure\/?$/);
+      if (m) { try { imported = importCfgObject(JSON.parse(UNB64(m[1]))); } catch(e) {} }
+    }
+    if (imported) save();  // keeps localStorage in sync + pins the config
+  }
   try {
     const r = await fetch('/api/repos'); DATA = await r.json();
-    // first-visit default only — when a selection was imported from the URL
-    // (/<cfg>/configure) it is the user's exact installed set and must not be
-    // padded with every other loaded plugin
+    // first-visit default only — when a selection was imported (URL install or
+    // saved state) it is the user's exact set and must not be padded
     if (Object.keys(state.p).length === 0) {
       allPlugins().forEach(p => { if (p.loaded && p.health !== 'down') state.p[p.internalName] = 1; });
     }
@@ -776,6 +889,7 @@ async function boot() {
     document.getElementById('syncLine').textContent = '⚠ failed to load repo data';
   }
   loadFormatter();
+  pushInstall();  // make sure a record exists so the URL always serves what this page shows
 }
 function poll() {
   fetch('/api/repos').then(r => r.json()).then(d => {
