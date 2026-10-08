@@ -448,10 +448,11 @@ object Streams {
         }
         var rows = ArrayList<Row>()
         candidates.forEachIndexed { i, cand ->
-            val st = if (cand.link.type == ExtractorLinkType.TORRENT || cand.link.type == ExtractorLinkType.MAGNET) null
-            else formatted[i]?.let { streamFromRendered(it, cand.link, cand.label) }
-                ?: toStremioStream(cand.link, cand.label, cfg)
-                ?: return@forEachIndexed
+            val st = if (cand.link.type == ExtractorLinkType.TORRENT || cand.link.type == ExtractorLinkType.MAGNET) {
+                toStremioStream(cand.link, cand.label, cfg)
+            } else {
+                formatted[i]?.let { streamFromRendered(it, cand.link, cand.label) } ?: toStremioStream(cand.link, cand.label, cfg)
+            } ?: return@forEachIndexed
             rows.add(Row(st, cand.label, cand.link))
         }
         rows.sortBy { rank[it.label.lowercase()] ?: 1000 }
