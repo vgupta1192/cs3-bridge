@@ -2,7 +2,22 @@ package com.kissmissi.csbridge
 
 import com.lagradost.common.logging.AppLogger
 
+/** stdout with each line cut at [max] bytes: plugins println whole pages. */
+private class LineCapStream(private val out: java.io.OutputStream, private val max: Int) : java.io.OutputStream() {
+    private var col = 0
+    override fun write(b: Int) {
+        if (b == '\n'.code) { col = 0; out.write(b); return }
+        col++
+        if (col <= max) out.write(b) else if (col == max + 1) out.write("…".toByteArray())
+    }
+    override fun flush() = out.flush()
+}
+
 fun main() {
+    (System.getenv("CSBRIDGE_STDOUT_LINE_MAX")?.toIntOrNull() ?: 400).takeIf { it > 0 }?.let { max ->
+        val fd = java.io.BufferedOutputStream(java.io.FileOutputStream(java.io.FileDescriptor.out), 8192)
+        System.setOut(java.io.PrintStream(LineCapStream(fd, max), true, "UTF-8"))
+    }
     AppLogger.i("CloudStream Bridge ${Cfg.version} starting…")
     Boot.init()
     // cached stream lists embed the formatter output — flush them whenever the

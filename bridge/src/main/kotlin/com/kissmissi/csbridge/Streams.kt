@@ -789,7 +789,9 @@ object Streams {
         }
 
         val tb = System.currentTimeMillis()
-        val result = buildResult(cfg, collected, ctxRef.get(), bg = !respond)
+        // background calls (warmer, prefetch, rescrape) ignore this first list:
+        // only the late merge below writes the cache, so skip formatting it
+        val result = if (respond) buildResult(cfg, collected, ctxRef.get()) else emptyList()
         val buildMs = System.currentTimeMillis() - tb
         if (buildMs > 1500) AppLogger.i("Streams: $kind/$id formatting took $buildMs ms")
         AppLogger.i("Streams: $kind/$id -> ${result.size} streams in ${System.currentTimeMillis() - t0} ms (scrape complete=${parent.isCompleted})")

@@ -1,8 +1,12 @@
 package com.lagradost.api
 
 actual object Log {
+    // plugin debug output (whole JSON/HTML bodies) was MBs per minute of log
+    // churn; CSBRIDGE_PLUGIN_DEBUG=1 brings it back
+    private val debug = System.getenv("CSBRIDGE_PLUGIN_DEBUG") == "1"
+
     actual fun d(tag: String, message: String) {
-        println("DEBUG $tag: $message")
+        if (debug) println("DEBUG $tag: $message")
     }
 
     actual fun i(tag: String, message: String) {
