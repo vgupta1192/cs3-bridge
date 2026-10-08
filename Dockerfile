@@ -17,4 +17,5 @@ ENTRYPOINT ["sh", "-c", "exec java \
   -Dorg.slf4j.simpleLogger.showDateTime=true \
   -Dorg.slf4j.simpleLogger.dateTimeFormat=HH:mm:ss \
   -Djava.util.prefs.userRoot=/app/data/prefs \
+  ${CSBRIDGE_JAVA_OPTS:-} \
   -cp '/app/lib/*' com.kissmissi.csbridge.MainKt"]

@@ -7,7 +7,8 @@ import com.fasterxml.jackson.module.kotlin.readValue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-data class TitleInfo(val name: String, val year: Int?, val type: String, val imdbId: String)
+/** animated: true/false from Cinemeta genres, null = unknown (older cache rows, TMDB fallback). */
+data class TitleInfo(val name: String, val year: Int?, val type: String, val imdbId: String, val animated: Boolean? = null)
 
 object Resolver {
     private val mapper = jacksonObjectMapper()
@@ -19,7 +20,7 @@ object Resolver {
         "https://v3-cinemeta.strem.io/meta/$kind/$imdb.json"
 
     suspend fun resolve(kind: String, imdb: String): TitleInfo? {
-        val key = "resolve:$kind:$imdb"
+        val key = "resolve2:$kind:$imdb"
         Store.get(key, RESOLVE_TTL)?.let { return runCatching { mapper.readValue<TitleInfo>(it) }.getOrNull() }
         // short negative cache: a Cinemeta+TMDB outage otherwise re-fetches both
         // on every tap; recovered resolves need to be picked up quickly, so this
@@ -41,7 +42,9 @@ object Resolver {
                 if (meta != null && meta.hasNonNull("name")) {
                     val release = meta.path("releaseInfo").asText("")
                     val year = release.split(Regex("[^0-9]")).firstOrNull { it.length == 4 }?.toIntOrNull()
-                    return TitleInfo(meta.get("name").asText(), year, kind, imdb)
+                    val genres = (meta.path("genres").takeIf { it.isArray } ?: meta.path("genre")).map { it.asText().lowercase() }
+                    val animated = if (genres.isEmpty()) null else genres.any { it == "animation" || it == "anime" }
+                    return TitleInfo(meta.get("name").asText(), year, kind, imdb, animated)
                 }
             }
         } catch (_: Exception) {}

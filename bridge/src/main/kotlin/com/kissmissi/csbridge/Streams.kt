@@ -686,6 +686,15 @@ object Streams {
         return result
     }
 
+    private val ANIME_TYPES = setOf("anime", "animemovie", "ova", "cartoon")
+    private val animeName = Regex("(?i)anime|donghua|hianime|^ani[a-z]")
+
+    /** Plugin serves only animation (repo tvTypes), or is an anime site by name. */
+    private fun animeOnly(info: PluginInfo): Boolean {
+        val t = info.tvTypes.map { it.lowercase() }
+        return (t.isNotEmpty() && t.all { it in ANIME_TYPES }) || animeName.containsMatchIn(info.internalName)
+    }
+
     /** How many of [links] this install would actually show (mirrors buildResult's filters). */
     private fun usable(cfg: BridgeConfig, links: List<ExtractorLink>, lang: String?): Int = links.count { link ->
         if (link.url.isBlank()) return@count false
@@ -908,7 +917,11 @@ object Streams {
                 val allPairs = Repos.enabledProviders(cfg.providers).flatMap { (info, provs) ->
                     provs.filter { it.supportedTypes.intersect(want).isNotEmpty() }.map { info to it }
                 }.sortedBy { rank[it.first.name.lowercase()] ?: 1000 }
-                val pairs = allPairs.filter { !breakerOpen(it.first.internalName + "#" + System.identityHashCode(it.second)) }
+                // anime/cartoon-only sources searched every live-action title and
+                // never matched — skip them unless the title is animated (or unknown)
+                val typed = if (titleInfo.animated == false) allPairs.filter { !animeOnly(it.first) } else allPairs
+                if (typed.size < allPairs.size) AppLogger.i("Streams: $kind/$id skipping ${allPairs.size - typed.size} anime-only providers (live-action title)")
+                val pairs = typed.filter { !breakerOpen(it.first.internalName + "#" + System.identityHashCode(it.second)) }
                 if (pairs.size < allPairs.size) AppLogger.i("Streams: $kind/$id skipping ${allPairs.size - pairs.size} providers with an open breaker")
                 fanOutPhase(Cfg.providerTimeoutMs + 30_000, "$kind/$id", "pass1") {
                     kotlinx.coroutines.coroutineScope {
