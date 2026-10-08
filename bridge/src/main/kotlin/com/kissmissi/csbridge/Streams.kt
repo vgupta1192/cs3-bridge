@@ -78,6 +78,12 @@ class BridgeConfig(
     companion object {
         val CORE_REPOS = setOf("CNC Repo (All Language)", "Phisher Repo", "Megix Repo (Hindi & English)", "raghav repo")
 
+        private fun boolFlag(v: Any?): Boolean = when (v) {
+            is Boolean -> v
+            is Number -> v.toInt() == 1
+            else -> false
+        }
+
         private fun fromMap(root: Map<*, *>): BridgeConfig {
             val p = (root["p"] as? Map<*, *>)?.filterValues { (it as? Number)?.toInt() != 0 }
                 ?.keys?.map { it.toString() }?.toSet() ?: emptySet()
@@ -85,11 +91,11 @@ class BridgeConfig(
             val qual = (q?.get("on") as? List<*>)?.mapNotNull { (it as? Number)?.toInt() }?.toSet()
                 ?: setOf(2160, 1080, 720, 480, 360)
             return BridgeConfig(
-                p, (root["c"] as? Number)?.toInt() == 1, (root["m"] as? Number)?.toInt() == 1,
+                p, boolFlag(root["c"]), boolFlag(root["m"]),
                 (root["d"] as? Number)?.toLong(),
                 qual,
                 (q?.get("tier") as? Number)?.toInt() ?: 0,
-                (q?.get("cam") as? Number)?.toInt() == 1,
+                boolFlag(q?.get("cam")),
                 FmtCfg.fromRaw(root["fmt"]),
                 (root["order"] as? List<*>)?.map { it.toString() } ?: emptyList(),
                 (root["lg"] as? List<*>)?.filterIsInstance<String>() ?: emptyList(),
