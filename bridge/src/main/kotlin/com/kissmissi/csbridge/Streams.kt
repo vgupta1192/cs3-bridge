@@ -730,11 +730,16 @@ object Streams {
                             channel.send(Triple(label, lang, res.links))
                         } else if (res.error != null) {
                             failed.add(key)
-                            // the retry wave must not double-count one request's failure
-                            if (!key.endsWith(":r")) breakerResult(bname, false)
                             val e = res.error
-                            if (e is kotlinx.coroutines.TimeoutCancellationException || e is java.io.IOException ||
-                                e.cause is java.io.IOException) retryable.add(key)
+                            val transient = e is kotlinx.coroutines.TimeoutCancellationException || e is java.io.IOException ||
+                                e.cause is java.io.IOException
+                            if (transient) retryable.add(key)
+                            // only network-level failures (site down / unreachable /
+                            // timing out) trip the breaker: many plugins THROW when a
+                            // title is simply missing, and counting those paused
+                            // healthy CNC Verse sources after one series lookup.
+                            // The retry wave must not double-count one request.
+                            if (transient && !key.endsWith(":r")) breakerResult(bname, false)
                             errorSamples.putIfAbsent(label, "${res.error::class.java.simpleName}: ${res.error.message?.take(120) ?: "no message"}")
                         } else {
                             noContent.add(key)
