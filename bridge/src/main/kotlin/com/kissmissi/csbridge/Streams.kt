@@ -520,6 +520,10 @@ object Streams {
 
     private val lastBackground = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
+    /** Process-wide provider-scrape caps: live requests (priority lane included) and the warmer. */
+    private val liveGlobal = Semaphore(Cfg.globalMaxConcurrent)
+    private val warmGlobal = Semaphore(Cfg.warmGlobalMaxConcurrent)
+
     /** cacheKey -> background job that writes the full list (late merge). */
     private val lateJobs = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Job>()
 
@@ -762,6 +766,11 @@ object Streams {
                     // instead of queueing behind the semaphore
                     val lane = !warm && (label.lowercase() in priority || key.substringBefore('#').lowercase() in priority)
                     if (!lane) sem.acquire()
+                    // process-wide cap shared by every request (and a small
+                    // separate one for the warmer): bursts of several titles
+                    // used to run 70-100 provider scrapes at once (1.8 GiB peaks)
+                    val global = if (warm) warmGlobal else liveGlobal
+                    try { global.acquire() } catch (t: Throwable) { if (!lane) sem.release(); throw t }
                     try {
                         val tStart = System.currentTimeMillis()
                         val res = try {
@@ -797,6 +806,7 @@ object Streams {
                             breakerResult(bname, true)
                         }
                     } finally {
+                        global.release()
                         if (!lane) sem.release()
                     }
                 } catch (_: Throwable) {
