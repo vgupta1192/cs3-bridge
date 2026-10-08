@@ -96,7 +96,8 @@ object HttpApi {
         "addon" to Cfg.ADDON_NAME,
         "version" to Cfg.version,
         "uptime_s" to ((System.currentTimeMillis() - started) / 1000),
-        "plugins_loaded" to Repos.plugins.values.count { it.loaded },
+        "plugins_loaded" to Repos.plugins.values.count { !Repos.isFailed(it) },
+        "plugins_in_memory" to Repos.plugins.values.count { it.loaded },
         "plugins_total" to Repos.plugins.size,
         "syncing" to Repos.isSyncing(),
     )
@@ -110,7 +111,7 @@ object HttpApi {
         when (segs.getOrNull(1)) {
             "repos" -> when (segs.getOrNull(2)) {
                 "add" -> {
-                    val res = Repos.addRepo(qp["name"] ?: "", qp["url"] ?: "")
+                    val res = Repos.addRepo(qp["name"] ?: "", qp["url"] ?: "", qp["enable"] != "0")
                     sendJson(ex, 200, mapOf("ok" to res.first, "message" to res.second))
                 }
                 "remove" -> {
@@ -119,6 +120,7 @@ object HttpApi {
                 }
                 else -> sendJson(ex, 200, reposJson())
             }
+            "breakers" -> sendJson(ex, 200, Streams.breakerState())
             "health" -> {
                 val started = Repos.startHealthCheck()
                 sendJson(ex, 200, mapOf("ok" to true, "running" to started))
@@ -139,12 +141,21 @@ object HttpApi {
                 val id = segs.getOrNull(2) ?: return sendJson(ex, 404, mapOf("error" to "install id required"))
                 if (ex.requestMethod.equals("POST", ignoreCase = true)) {
                     val body = ex.requestBody.readBytes().toString(Charsets.UTF_8)
+                    val oldFp = Installs.fingerprint(id)
                     val (ok, msg) = Installs.save(id, body)
                     if (ok) {
                         // config changed: this install's cached streams/catalogs
-                        // no longer match
+                        // no longer match (stream caches are keyed by config
+                        // fingerprint; a re-POST of the same config still flushes)
                         Store.deletePrefix("streams2:$id:")
+                        Store.deletePrefix("streams2:$oldFp:")
+                        Store.deletePrefix("streams2:${Installs.fingerprint(id)}:")
                         Store.deletePrefix("catalog:$id:")
+                        // newly enabled sources load in the background, not on the next tap
+                        runCatching {
+                            val p = mapper.readValue<Map<String, Any?>>(body)["p"] as? Map<*, *>
+                            p?.filterValues { (it as? Number)?.toInt() != 0 }?.keys?.map { it.toString() }?.let { Repos.preloadAsync(it) }
+                        }
                     }
                     sendJson(ex, 200, mapOf("ok" to ok, "message" to msg))
                 } else {
@@ -198,7 +209,9 @@ object HttpApi {
                             "iconUrl" to p.iconUrl,
                             "language" to p.language,
                             "tvTypes" to p.tvTypes,
-                            "loaded" to p.loaded,
+                            // "loaded" = usable (in memory, or on disk and loaded on first use)
+                            "loaded" to !Repos.isFailed(p),
+                            "active" to p.loaded,
                             "error" to p.error,
                             "providers" to p.providerNames,
                             "health" to h.status,
@@ -257,12 +270,14 @@ object HttpApi {
         val cfg = BridgeConfig.decode(segs[0])
         val kind = segs[2] // movie | series | other
         val id = URLDecoder.decode(segs.drop(3).joinToString("/").removeSuffix(".json"), "UTF-8")
-        val cacheKey = "streams2:${segs[0]}:$kind:$id"
+        // keyed by config fingerprint: installs with identical settings share
+        // one scrape and one cache entry
+        val cacheKey = "streams2:${Installs.fingerprint(segs[0])}:$kind:$id"
         val cached = Store.get(cacheKey, 6L * 3600 * 1000)
         if (cached != null) {
             val entry = runCatching { mapper.readValue<Map<String, Any?>>(cached) }.getOrNull() ?: mapOf("streams" to emptyList<Any?>())
             if (entry["incomplete"] == true) {
-                Streams.rescrapeAsync(cfg, kind, id, cacheKey)
+                Streams.rescrapeAsync(cfg, kind, id, cacheKey, entry)
             } else {
                 // degraded entries (scraped during a provider outage window) self-heal
                 Streams.maybeRescrapeDegraded(cfg, kind, id, cacheKey, entry)

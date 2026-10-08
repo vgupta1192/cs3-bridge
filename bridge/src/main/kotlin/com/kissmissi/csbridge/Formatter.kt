@@ -34,6 +34,7 @@ object Formatter {
             api?.let { return it }
             val ctx = Context.newBuilder("js")
                 .option("js.ecmascript-version", "2023")
+                .option("engine.WarnInterpreterOnly", "false")
                 .build()
             val combined = script("csb-prelude.js") + "\n" +
                 script("aiostreams-formatter.js") + "\n" +
@@ -65,9 +66,33 @@ object Formatter {
      *  fresh answers blew way past the configured response deadline as a result. */
     fun renderBatch(t: Templates, items: List<Pair<String, String>>): List<Rendered?> {
         if (items.isEmpty()) return emptyList()
-        val arr = mapper.writeValueAsString(items.map { listOf(it.first, it.second) })
-        val res = synchronized(lock) { ensure().getMember("renderBatch").execute(t.name, t.description, arr).asString() }
-        return mapper.readValue<List<Rendered?>>(res)
+        // GraalJS runs interpreter-only on a stock JDK, so every render is real
+        // CPU. A serve, its late merge and every rescrape re-render mostly the
+        // same links — memoize per (template, link meta, context).
+        val tk = (t.name + "\u0000" + t.description).hashCode().toString()
+        val keys = items.map { tk + "\u0000" + it.first + "\u0000" + it.second }
+        val out = arrayOfNulls<Rendered>(items.size)
+        val miss = ArrayList<Int>()
+        synchronized(memo) {
+            keys.forEachIndexed { i, k -> val hit = memo[k]; if (hit != null) out[i] = hit else miss.add(i) }
+        }
+        if (miss.isNotEmpty()) {
+            val arr = mapper.writeValueAsString(miss.map { listOf(items[it].first, items[it].second) })
+            val res = synchronized(lock) { ensure().getMember("renderBatch").execute(t.name, t.description, arr).asString() }
+            val rendered = mapper.readValue<List<Rendered?>>(res)
+            synchronized(memo) {
+                miss.forEachIndexed { j, i ->
+                    val r = rendered.getOrNull(j)
+                    out[i] = r
+                    if (r != null) memo[keys[i]] = r
+                }
+            }
+        }
+        return out.toList()
+    }
+
+    private val memo = object : java.util.LinkedHashMap<String, Rendered>(1024, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Rendered>?): Boolean = size > 6000
     }
 
     /** {presets: [{id,label,family,name,description}], fields: {section: [props]}} */

@@ -23,6 +23,9 @@ class CloudflareKiller : Interceptor {
         // Track hosts where bypass has already failed — don't retry during this session
         private val failedHosts = ConcurrentHashMap.newKeySet<String>()
 
+        /** No browser engine in the headless bridge (WebViewResolver.jvm is a stub). */
+        private val bypassSupported = System.getenv("CSBRIDGE_CF_BYPASS") == "1"
+
         /** Concurrent fleet scraping can mark a host failed on a transient race;
          *  the retry wave clears these so the second attempt gets a fresh solve. */
         fun resetFailedHosts() {
@@ -67,7 +70,25 @@ class CloudflareKiller : Interceptor {
         return builder.build()
     }
 
-    override fun intercept(chain: Interceptor.Chain): Response = runBlocking {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val host = request.url.host
+        // hot path without a per-request event loop: nothing solved for this host,
+        // or it is already known to be unsolvable
+        if (!savedCookies.containsKey(host) && (failedHosts.contains(host) || !bypassSupported)) {
+            if (failedHosts.contains(host)) return chain.proceed(request)
+            val response = chain.proceed(request)
+            if (response.code in ERROR_CODES &&
+                CLOUDFLARE_SERVERS.any { (response.header("Server") ?: "").contains(it, ignoreCase = true) } &&
+                (response.header("Content-Type") ?: "").contains("text/html", ignoreCase = true) &&
+                failedHosts.add(host)
+            ) AppLogger.i("$TAG: $host is behind a Cloudflare challenge (no browser available, passing through)")
+            return response
+        }
+        return interceptSlow(chain)
+    }
+
+    private fun interceptSlow(chain: Interceptor.Chain): Response = runBlocking {
         val request = chain.request()
         val host = request.url.host
 
@@ -94,6 +115,16 @@ class CloudflareKiller : Interceptor {
             contentType.contains("text/html", ignoreCase = true)
 
         if (!isCloudflareChallenge) {
+            return@runBlocking response
+        }
+
+        // The headless bridge has no WebView/Playwright (WebViewResolver.jvm is a
+        // stub that throws NotImplementedError). Attempting the bypass only threw
+        // from inside OkHttp, closed the challenge response the plugin could still
+        // read, never marked the host failed, and dumped a stack trace per call.
+        // Hand the challenge page back untouched and remember the host.
+        if (!bypassSupported) {
+            if (failedHosts.add(host)) AppLogger.i("$TAG: $host is behind a Cloudflare challenge (no browser available, passing through)")
             return@runBlocking response
         }
 

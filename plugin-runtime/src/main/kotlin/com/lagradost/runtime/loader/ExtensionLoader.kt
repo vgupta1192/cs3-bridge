@@ -73,17 +73,23 @@ object ExtensionLoader {
             val dexEntry = zip.getEntry("classes.dex")
             if (dexEntry != null) {
                 val dexFile = File(jarFile.parentFile, jarFile.nameWithoutExtension + ".dex")
-                zip.getInputStream(dexEntry).use { input ->
-                    Files.copy(input, dexFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                }
 
                 val convertedJar = File(jarFile.parentFile, jarFile.nameWithoutExtension + "-jvm.jar")
+                // The converted jar is tied to the dex it came from: a sidecar holds
+                // the dex CRC+size. Without it an updated .cs3 kept running the OLD
+                // converted classes forever (the cache only checked existence).
+                val dexTag = "${dexEntry.crc}:${dexEntry.size}"
+                val tagFile = File(jarFile.parentFile, jarFile.nameWithoutExtension + "-jvm.jar.dex")
+                val tagOk = tagFile.exists() && runCatching { tagFile.readText().trim() == dexTag }.getOrDefault(false)
                 // <64 B = empty artifact of an interrupted conversion (dex2jar
                 // writes progressively; a killed run used to poison the cache
                 // forever, e.g. AniSnatch/AniSuge shipped 22-byte jars)
-                if (!convertedJar.exists() || convertedJar.length() < 64) {
+                if (!convertedJar.exists() || convertedJar.length() < 64 || !tagOk) {
                     convertedJar.delete()
-                    AppLogger.i("Transpiling Dalvik classes.dex to JVM classes.jar...")
+                    zip.getInputStream(dexEntry).use { input ->
+                        Files.copy(input, dexFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                    }
+                    AppLogger.i("Transpiling Dalvik classes.dex of ${jarFile.name} to JVM classes.jar...")
                     val tmpJar = File(jarFile.parentFile, jarFile.nameWithoutExtension + "-jvm.jar.tmp")
                     tmpJar.delete()
                     // Subprocess, not in-process: dex2jar has exponential-case
@@ -101,6 +107,7 @@ object ExtensionLoader {
                         convertedJar.delete()
                         if (!tmpJar.renameTo(convertedJar)) throw IllegalStateException("could not finalize ${convertedJar.name}")
                     }
+                    runCatching { tagFile.writeText(dexTag) }
                 }
                 runCatching { dexFile.delete() }
 

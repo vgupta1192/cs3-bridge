@@ -372,7 +372,7 @@ textarea.tpl.small { min-height:64px; }
         <div class="sec-head" style="margin-top:16px"><div class="sec-title">Add a repository</div></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <input id="add-name" placeholder="Name (optional)" style="flex:1;min-width:180px">
-          <input id="add-url" placeholder="https://…/plugins.json" style="flex:2;min-width:260px">
+          <input id="add-url" placeholder="repo.json link, cloudstreamrepo:// link or github.com/owner/repo" style="flex:2;min-width:260px">
           <button class="btn primary" id="add-btn">＋ Add</button>
         </div>
         <div class="note" id="addMsg"></div>
@@ -842,8 +842,9 @@ document.getElementById('healthbtn').onclick = () => {
 document.getElementById('add-btn').onclick = () => {
   const url = document.getElementById('add-url').value.trim();
   if (!url) return;
+  document.getElementById('addMsg').textContent = 'Looking up repository…';
   fetch('/api/repos/add?url=' + encodeURIComponent(url) + '&name=' + encodeURIComponent(document.getElementById('add-name').value.trim()))
-    .then(r => r.json()).then(d => { document.getElementById('addMsg').textContent = d.message; if (d.ok) { document.getElementById('add-url').value = ''; document.getElementById('add-name').value = ''; poll(); } });
+    .then(r => r.json()).then(d => { document.getElementById('addMsg').textContent = d.message; if (d.ok) { REIMPORT_AFTER_SYNC = true; document.getElementById('add-url').value = ''; document.getElementById('add-name').value = ''; poll(); } });
 };
 document.getElementById('copy').onclick = () => {
   pushInstall();  // make sure the backend has the config before they paste it
@@ -891,10 +892,18 @@ async function boot() {
   loadFormatter();
   pushInstall();  // make sure a record exists so the URL always serves what this page shows
 }
+let REIMPORT_AFTER_SYNC = false;
 function poll() {
   fetch('/api/repos').then(r => r.json()).then(d => {
     DATA = d; renderAll();
-    if (d.syncing || d.healthRunning) setTimeout(poll, 5000);
+    // a repo was just added: the server switches its sources on in the saved
+    // install once the sync ends — pull that config back in so the next save
+    // from this page does not switch them off again
+    if (REIMPORT_AFTER_SYNC && !d.syncing && INSTALL) {
+      REIMPORT_AFTER_SYNC = false;
+      setTimeout(() => fetch('/api/installs/' + INSTALL).then(r => r.json()).then(x => { if (x && x.config && importCfgObject(x.config)) renderAll(); }).catch(() => {}), 4000);
+    }
+    if (d.syncing || d.healthRunning || REIMPORT_AFTER_SYNC) setTimeout(poll, 5000);
   }).catch(() => {});
 }
 boot();

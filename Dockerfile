@@ -6,7 +6,11 @@ ENV CSBRIDGE_PORT=7095 CSBRIDGE_DATA_DIR=/app/data
 VOLUME /app/data
 EXPOSE 7095
 ENTRYPOINT ["java", \
-  "-Xms128m", "-Xmx1g", "-XX:MaxMetaspaceSize=900m", "-XX:MaxDirectMemorySize=256m", \
+  "-Xms64m", "-Xmx1g", "-Xss512k", \
+  "-XX:MaxMetaspaceSize=512m", "-XX:MaxDirectMemorySize=128m", "-XX:ReservedCodeCacheSize=96m", \
+  "-XX:+UseG1GC", "-XX:G1PeriodicGCInterval=60000", "-XX:MinHeapFreeRatio=10", "-XX:MaxHeapFreeRatio=30", \
+  "-XX:+UseStringDeduplication", \
+  "-Dpolyglot.engine.WarnInterpreterOnly=false", \
   "-Djava.awt.headless=true", \
   "-Dorg.slf4j.simpleLogger.defaultLogLevel=info", \
   "-Dorg.slf4j.simpleLogger.showDateTime=true", \

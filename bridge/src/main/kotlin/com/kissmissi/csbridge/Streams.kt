@@ -117,7 +117,7 @@ class BridgeConfig(
                 fromMap(jacksonObjectMapper().readValue<Map<String, Any>>(json))
             } catch (e: Exception) {
                 BridgeConfig(
-                    Repos.plugins.values.filter { it.loaded && it.repo in CORE_REPOS }.map { it.internalName }.toSet(),
+                    Repos.plugins.values.filter { !Repos.isFailed(it) && it.repo in CORE_REPOS }.map { it.internalName }.toSet(),
                     true, false, null
                 )
             }
@@ -140,9 +140,12 @@ object Streams {
     }
 
 
+    private val bracketRegex = Regex("""\[.*?\]|\(.*?\)""")
+    private val nonAlnumRegex = Regex("[^a-z0-9]+")
+
     fun norm(s: String): String = s.lowercase()
-        .replace(Regex("""\[.*?\]|\(.*?\)"""), " ")
-        .replace(Regex("[^a-z0-9]+"), " ").trim()
+        .replace(bracketRegex, " ")
+        .replace(nonAlnumRegex, " ").trim()
 
     private fun yearOf(r: com.lagradost.cloudstream3.SearchResponse): Int? = when (r) {
         is MovieSearchResponse -> r.year
@@ -183,6 +186,8 @@ object Streams {
         "Marathi", "Japanese", "Korean", "Chinese", "Spanish", "French", "German", "Turkish",
         "Arabic", "Portuguese", "Russian", "Italian", "Indonesian", "Thai", "Vietnamese", "Urdu",
     )
+    private val LANG_REGEX = LANG_NAMES.map { it to Regex("\\b${it}\\b", RegexOption.IGNORE_CASE) }
+    private val dubRegex = Regex("""\bdubs?\b|\bdubbed\b""", RegexOption.IGNORE_CASE)
     private val LANG_BY_CODE = mapOf(
         "hi" to "Hindi", "en" to "English", "ta" to "Tamil", "te" to "Telugu", "ml" to "Malayalam",
         "kn" to "Kannada", "bn" to "Bengali", "pa" to "Punjabi", "mr" to "Marathi", "ja" to "Japanese",
@@ -200,9 +205,9 @@ object Streams {
             java.net.URLDecoder.decode(f.substringAfterLast('/'), "UTF-8")
         }.getOrNull() ?: ""
         val text = "${link.name} ${link.source} $filename"
-        val parsed = LANG_NAMES.filter { Regex("\\b${it}\\b", RegexOption.IGNORE_CASE).containsMatchIn(text) }
+        val parsed = LANG_REGEX.filter { it.second.containsMatchIn(text) }.map { it.first }
         if (parsed.isNotEmpty()) return parsed
-        if (Regex("""\bdubs?\b|\bdubbed\b""", RegexOption.IGNORE_CASE).containsMatchIn(text)) return listOf("English")
+        if (dubRegex.containsMatchIn(text)) return listOf("English")
         val code = providerLang?.substringBefore('-')?.lowercase() ?: ""
         return LANG_BY_CODE[code]?.let { listOf(it) } ?: emptyList()
     }
@@ -372,6 +377,100 @@ object Streams {
     /** cacheKey -> a scrape/rescrape for this key is currently running (dedupes rescrapes against live scrapes). */
     private val activeScrapes = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 
+    /** cacheKey -> answer of the request currently scraping it. Apps fire the same
+     *  stream request 2-3x (retries, prefetch, two devices); each used to start its
+     *  own full fan-out over every provider. Followers now wait for the leader. */
+    private val inflight = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<List<Map<String, Any?>>>>()
+
+    // ---- per-provider circuit breaker ----
+    // A provider whose site is dead / blocking us failed every request, burning
+    // a search + load + retry each time. After BREAKER_FAILS consecutive failures
+    // it is skipped for BREAKER_OPEN_MS, then gets one probe request again.
+    private class Breaker { var fails = 0; var openUntil = 0L }
+    private val breakers = java.util.concurrent.ConcurrentHashMap<String, Breaker>()
+    private val BREAKER_FAILS = System.getenv("CSBRIDGE_BREAKER_FAILS")?.toIntOrNull() ?: 3
+    private val BREAKER_OPEN_MS = System.getenv("CSBRIDGE_BREAKER_OPEN_MS")?.toLongOrNull() ?: (15L * 60 * 1000)
+
+    private fun breakerOpen(name: String): Boolean = (breakers[name]?.openUntil ?: 0L) > System.currentTimeMillis()
+
+    private fun breakerResult(name: String, ok: Boolean) {
+        val b = breakers.computeIfAbsent(name) { Breaker() }
+        synchronized(b) {
+            if (ok) { b.fails = 0; b.openUntil = 0L; return }
+            b.fails++
+            if (b.fails >= BREAKER_FAILS) {
+                b.openUntil = System.currentTimeMillis() + BREAKER_OPEN_MS
+                // half-open: one more failure after the pause re-opens at once
+                b.fails = BREAKER_FAILS - 1
+                AppLogger.i("Streams: breaker open for $name (${BREAKER_OPEN_MS / 60000} min) after repeated failures")
+            }
+        }
+    }
+
+    /** Snapshot for /api/breakers. */
+    fun breakerState(): Map<String, Any?> = breakers.entries.filter { it.value.openUntil > System.currentTimeMillis() }
+        .associate { it.key to mapOf("openForS" to (it.value.openUntil - System.currentTimeMillis()) / 1000) }
+
+    // ---- playable-link check (background only, never on the response path) ----
+    // Before the full list is cached, links are probed with a 1-byte ranged GET;
+    // definitively dead ones (404/410, HTML error pages, unknown host, refused)
+    // are dropped so repeat taps only show links that open. Timeouts are kept.
+    private val validateOn = System.getenv("CSBRIDGE_VALIDATE") != "0"
+    private val validateMax = System.getenv("CSBRIDGE_VALIDATE_MAX")?.toIntOrNull() ?: 60
+    private val probeVerdicts = object : java.util.LinkedHashMap<String, Pair<Boolean, Long>>(512, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Boolean, Long>>?): Boolean = size > 4000
+    }
+    private const val PROBE_TTL = 30L * 60 * 1000
+    private val probeClient by lazy {
+        com.lagradost.cloudstream3.app.baseClient.newBuilder()
+            .connectTimeout(4, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(4, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(7, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
+    /** true = definitively dead. */
+    private fun probeDead(url: String, headers: Map<String, String>): Boolean {
+        synchronized(probeVerdicts) {
+            probeVerdicts[url]?.let { (dead, ts) -> if (System.currentTimeMillis() - ts < PROBE_TTL) return dead }
+        }
+        val dead = try {
+            val b = okhttp3.Request.Builder().url(url).header("Range", "bytes=0-0")
+            headers.forEach { (k, v) -> runCatching { b.header(k, v) } }
+            if (headers.keys.none { it.equals("user-agent", true) }) b.header("user-agent", com.lagradost.cloudstream3.USER_AGENT)
+            probeClient.newCall(b.build()).execute().use { r ->
+                val html = (r.header("Content-Type") ?: "").contains("text/html", true)
+                r.code == 404 || r.code == 410 || r.code == 451 || (r.code >= 400 && html)
+            }
+        } catch (e: java.net.UnknownHostException) { true
+        } catch (e: java.net.ConnectException) { true
+        } catch (e: Exception) { false }
+        synchronized(probeVerdicts) { probeVerdicts[url] = dead to System.currentTimeMillis() }
+        return dead
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private suspend fun dropDead(streams: List<Map<String, Any?>>): List<Map<String, Any?>> {
+        if (!validateOn || streams.isEmpty()) return streams
+        val sem = Semaphore(8)
+        val dead = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+        kotlinx.coroutines.coroutineScope {
+            streams.take(validateMax).forEachIndexed { i, st ->
+                val url = st["url"] as? String ?: return@forEachIndexed
+                if (!url.startsWith("http")) return@forEachIndexed
+                val headers = (((st["behaviorHints"] as? Map<String, Any?>)?.get("proxyHeaders") as? Map<String, Any?>)
+                    ?.get("request") as? Map<String, String>) ?: emptyMap()
+                launch(Dispatchers.IO) {
+                    sem.acquire()
+                    try { if (probeDead(url, headers)) dead.add(i) } finally { sem.release() }
+                }
+            }
+        }
+        if (dead.isEmpty()) return streams
+        AppLogger.i("Streams: dropped ${dead.size} dead links of ${streams.size}")
+        return streams.filterIndexed { i, _ -> i !in dead }
+    }
+
     /**
      * Background re-scrape: for a cache entry written before its scrape finished
      * ("incomplete"), or a degraded low-stream entry old enough to be worth
@@ -379,7 +478,10 @@ object Streams {
      * a still-running scrape for the same key; overwrites the cache with the full
      * merged list when done.
      */
-    fun rescrapeAsync(cfg: BridgeConfig, kind: String, id: String, cacheKey: String) {
+    fun rescrapeAsync(cfg: BridgeConfig, kind: String, id: String, cacheKey: String, entry: Map<String, Any?>? = null) {
+        // an "incomplete" entry gets one rescrape per INCOMPLETE_RESCRAPE_MS, not one per tap
+        val ts = (entry?.get("ts") as? Number)?.toLong() ?: 0L
+        if (ts > 0L && System.currentTimeMillis() - ts < INCOMPLETE_RESCRAPE_MS) return
         if (activeScrapes.putIfAbsent(cacheKey, true) != null) return
         scrapeScope.launch {
             try {
@@ -409,8 +511,28 @@ object Streams {
     }
 
     /** Main entry: streams for a stremio-style request. Returns after the deadline; scraping continues detached. */
-    fun streamsFor(cfg: BridgeConfig, kind: String, id: String, cacheKey: String? = null): List<Map<String, Any?>> =
-        streamsForInternal(cfg, kind, id, cacheKey, respond = true)
+    private const val INCOMPLETE_RESCRAPE_MS = 5L * 60 * 1000
+
+    fun streamsFor(cfg: BridgeConfig, kind: String, id: String, cacheKey: String? = null): List<Map<String, Any?>> {
+        if (cacheKey == null) return streamsForInternal(cfg, kind, id, null, respond = true)
+        val mine = java.util.concurrent.CompletableFuture<List<Map<String, Any?>>>()
+        val leader = inflight.putIfAbsent(cacheKey, mine)
+        if (leader != null) {
+            val wait = (cfg.deadlineMs ?: Cfg.deadlineMs) + 3000
+            AppLogger.i("Streams: $kind/$id joining in-flight scrape")
+            return runCatching { leader.get(wait, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrElse { emptyList() }
+        }
+        try {
+            val r = streamsForInternal(cfg, kind, id, cacheKey, respond = true)
+            mine.complete(r)
+            return r
+        } catch (t: Throwable) {
+            mine.complete(emptyList())
+            throw t
+        } finally {
+            inflight.remove(cacheKey, mine)
+        }
+    }
 
     private fun streamsForInternal(cfg: BridgeConfig, kind: String, id: String, cacheKey: String?, respond: Boolean): List<Map<String, Any?>> {
         val t0 = System.currentTimeMillis()
@@ -470,13 +592,19 @@ object Streams {
         if (cacheKey != null) {
             scrapeScope.launch {
                 runCatching {
+                    // drain until the fan-out closes the channel (its phases are
+                    // wall-clock capped). The old 30 s-lull exit left entries
+                    // flagged incomplete, which re-ran the whole fan-out on the
+                    // next tap.
                     val start = System.currentTimeMillis()
-                    while (!parent.isCompleted && System.currentTimeMillis() - start < 600_000) {
-                        val r = withTimeoutOrNull(30_000) { channel.receiveCatching() } ?: break
+                    while (System.currentTimeMillis() - start < 600_000) {
+                        val left = 600_000 - (System.currentTimeMillis() - start)
+                        val r = withTimeoutOrNull(left) { channel.receiveCatching() } ?: break
                         val got = r.getOrNull() ?: break
                         synchronized(collected) { collected.add(got) }
                     }
-                    val full = buildResult(cfg, collected, ctxRef.get())
+                    withTimeoutOrNull(5_000) { parent.join() }
+                    val full = dropDead(buildResult(cfg, collected, ctxRef.get()))
                     if (full.isNotEmpty() || respond) {
                         // a 30s lull can break the loop while the parent scrape is
                         // still running - keep the incomplete flag honest so the
@@ -571,6 +699,8 @@ object Streams {
         val failed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val errorSamples = java.util.concurrent.ConcurrentHashMap<String, String>()
         val retryDefs = java.util.concurrent.ConcurrentHashMap<String, Triple<String, String?, suspend () -> ProviderOutcome>>()
+        // only transient failures (timeouts, network errors) are worth a second wave
+        val retryable = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
         fun launchProvider(scope: kotlinx.coroutines.CoroutineScope, label: String, key: String, lang: String?, work: suspend () -> ProviderOutcome) {
             attempted.add(key)
@@ -587,14 +717,21 @@ object Streams {
                         } catch (t: Throwable) {
                             ProviderOutcome(emptyList(), t)
                         }
+                        val bname = key.substringBefore('#')
                         if (res.links.isNotEmpty()) {
                             succeeded.add(key)
+                            breakerResult(bname, true)
                             channel.send(Triple(label, lang, res.links))
                         } else if (res.error != null) {
                             failed.add(key)
+                            breakerResult(bname, false)
+                            val e = res.error
+                            if (e is kotlinx.coroutines.TimeoutCancellationException || e is java.io.IOException ||
+                                e.cause is java.io.IOException) retryable.add(key)
                             errorSamples.putIfAbsent(label, "${res.error::class.java.simpleName}: ${res.error.message?.take(120) ?: "no message"}")
                         } else {
                             noContent.add(key)
+                            breakerResult(bname, true)
                         }
                     } finally {
                         sem.release()
@@ -661,9 +798,11 @@ object Streams {
                 else
                     setOf(TvType.TvSeries, TvType.Anime, TvType.Cartoon, TvType.OVA, TvType.AsianDrama, TvType.Documentary)
                 val rank = cfg.order.withIndex().associate { it.value.lowercase() to it.index }
-                val pairs = Repos.enabledProviders(cfg.providers).flatMap { (info, provs) ->
+                val allPairs = Repos.enabledProviders(cfg.providers).flatMap { (info, provs) ->
                     provs.filter { it.supportedTypes.intersect(want).isNotEmpty() }.map { info to it }
                 }.sortedBy { rank[it.first.name.lowercase()] ?: 1000 }
+                val pairs = allPairs.filter { !breakerOpen(it.first.internalName) }
+                if (pairs.size < allPairs.size) AppLogger.i("Streams: $kind/$id skipping ${allPairs.size - pairs.size} providers with an open breaker")
                 fanOutPhase(Cfg.providerTimeoutMs + 30_000, "$kind/$id", "pass1") {
                     kotlinx.coroutines.coroutineScope {
                         for ((info, prov) in pairs) {
@@ -688,12 +827,12 @@ object Streams {
             // Retry ONLY providers that FAILED (threw / timed out / null load) -
             // providers that searched fine and have no content are not retried.
             fanOutSummary(kind, id, "pass1", attempted, succeeded, noContent, failed, errorSamples)
-            if (failed.isNotEmpty()) {
-                com.lagradost.cloudstream3.network.CloudflareKiller.resetFailedHosts()
-                AppLogger.i("Streams: retrying ${failed.size} failed providers")
+            val toRetry = failed.filter { it in retryable && !breakerOpen(it.substringBefore('#')) }
+            if (toRetry.isNotEmpty()) {
+                AppLogger.i("Streams: retrying ${toRetry.size} of ${failed.size} failed providers (transient errors only)")
                 fanOutPhase(Cfg.providerTimeoutMs + 30_000, "$kind/$id", "retry") {
                     kotlinx.coroutines.coroutineScope {
-                        for (key in failed) {
+                        for (key in toRetry) {
                             retryDefs[key]?.let { (label, lang, work) ->
                                 launchProvider(this, label, key + ":r", lang, work)
                             }
