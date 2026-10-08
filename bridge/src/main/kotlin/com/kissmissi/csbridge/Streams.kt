@@ -74,6 +74,15 @@ class BridgeConfig(
     // unknown-language streams, 2 drop unknown too
     val langs: List<String> = emptyList(),
     val langFilter: Int = 0,
+    // providers whose catalogs stay hidden even when catalogs are on
+    val catOff: Set<String> = emptySet(),
+    // file-size limits in GB (null = none); streams with unknown size are never hidden
+    val sizeMinGb: Double? = null,
+    val sizeMaxGb: Double? = null,
+    // "" (default: provider order) | "quality" | "provider"
+    val group: String = "",
+    // "" (default) | "size" (largest first inside each group)
+    val sort: String = "",
 ) {
     companion object {
         val CORE_REPOS = setOf("CNC Repo (All Language)", "Phisher Repo", "Megix Repo (Hindi & English)", "raghav repo")
@@ -100,6 +109,11 @@ class BridgeConfig(
                 (root["order"] as? List<*>)?.map { it.toString() } ?: emptyList(),
                 (root["lg"] as? List<*>)?.filterIsInstance<String>() ?: emptyList(),
                 (root["lgf"] as? Number)?.toInt() ?: 0,
+                (root["co"] as? List<*>)?.filterIsInstance<String>()?.toSet() ?: emptySet(),
+                (root["smin"] as? Number)?.toDouble()?.takeIf { it > 0 },
+                (root["smax"] as? Number)?.toDouble()?.takeIf { it > 0 },
+                (root["grp"] as? String) ?: "",
+                (root["sort"] as? String) ?: "",
             )
         }
 
@@ -311,8 +325,12 @@ object Streams {
                 when {
                     eps.isEmpty() -> null
                     season == null && episode == null -> eps.first().data
+                    // providers without seasons (KissKH dramas, most anime) list
+                    // episodes with season = null; the meta endpoint shows those
+                    // as season 1, so S1 must match a null season too
                     else -> (eps.firstOrNull { it.season == season && it.episode == episode }?.data
-                        ?: if (season == null) eps.firstOrNull { it.episode == episode }?.data else null)
+                        ?: (if (season == null || season == 1) eps.firstOrNull { it.season == null && it.episode == episode }?.data else null)
+                        ?: (if (season == null) eps.firstOrNull { it.episode == episode }?.data else null))
                 }
             }
             else -> null
@@ -686,6 +704,16 @@ object Streams {
         return result
     }
 
+    private val sizeRegex = Regex("""(?i)(\d+(?:[.,]\d+)?)\s*(GB|GiB|MB|MiB)\b""")
+
+    /** File size in GB parsed from the link name / source / file name; null when unknown. */
+    private fun sizeGb(link: ExtractorLink): Double? {
+        val file = runCatching { java.net.URLDecoder.decode(link.url.substringBefore('?').substringAfterLast('/'), "UTF-8") }.getOrDefault("")
+        val m = sizeRegex.find("${link.name} ${link.source} $file") ?: return null
+        val v = m.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return null
+        return if (m.groupValues[2].startsWith("G", true)) v else v / 1024.0
+    }
+
     private val ANIME_TYPES = setOf("anime", "animemovie", "ova", "cartoon")
     private val animeName = Regex("(?i)anime|donghua|hianime|^ani[a-z]")
 
@@ -763,6 +791,25 @@ object Streams {
                     if (ls.isEmpty()) cfg.langFilter == 1 else ls.any { cfg.langs.contains(it) }
                 })
             }
+        }
+        if (cfg.sizeMinGb != null || cfg.sizeMaxGb != null) {
+            rows = ArrayList(rows.filter { row ->
+                val gb = sizeGb(row.link) ?: return@filter true
+                (cfg.sizeMinGb == null || gb >= cfg.sizeMinGb) && (cfg.sizeMaxGb == null || gb <= cfg.sizeMaxGb)
+            })
+        }
+        if (cfg.group.isNotEmpty() || cfg.sort == "size") {
+            val sizes = rows.associateWith { sizeGb(it.link) ?: -1.0 }
+            val cmp = Comparator<Row> { a, b ->
+                val g = when (cfg.group) {
+                    "quality" -> tierOf(b.link).compareTo(tierOf(a.link))
+                    "provider" -> (rank[a.label.lowercase()] ?: 1000).compareTo(rank[b.label.lowercase()] ?: 1000)
+                        .let { if (it != 0) it else a.label.compareTo(b.label) }
+                    else -> 0
+                }
+                if (g != 0) g else if (cfg.sort == "size") (sizes[b] ?: -1.0).compareTo(sizes[a] ?: -1.0) else 0
+            }
+            rows = ArrayList(rows.sortedWith(cmp))
         }
         if (cfg.maxPerTier > 0) {
             val counts = HashMap<Int, Int>()

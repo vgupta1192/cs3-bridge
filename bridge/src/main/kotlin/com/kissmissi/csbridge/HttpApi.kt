@@ -233,6 +233,7 @@ object HttpApi {
         val catalogs = ArrayList<Map<String, Any?>>()
         if (cfg.catalogs) {
             for ((info, provs) in enabled) {
+                if (info.internalName in cfg.catOff) continue
                 for (prov in provs) {
                     val rows = runCatching { prov.mainPage.filter { it.name.isNotBlank() && it.data.isNotBlank() } }
                         .getOrDefault(emptyList())

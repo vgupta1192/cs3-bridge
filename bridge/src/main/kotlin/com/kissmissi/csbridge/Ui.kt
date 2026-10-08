@@ -19,6 +19,12 @@ object Ui {
 }
 [data-base-theme="charcoal"] { --bg:#18181b; --surface:#27272a; --surface-active:#3f3f46; --card-hover:#323236; --sidebar:#141416; --border:#3f3f46; --border-focus:#52525b; --text:#fff; --text-sub:#d4d4d8; --text-dim:#a1a1aa; }
 [data-base-theme="navy"] { --bg:#0d1117; --surface:#161b22; --surface-active:#21262d; --card-hover:#1c2128; --sidebar:#10151c; --border:#30363d; --border-focus:#484f58; --text:#fff; --text-sub:#cbd5e1; --text-dim:#94a3b8; }
+[data-base-theme="light"] { --bg:#f4f6fb; --surface:#ffffff; --surface-active:#e9edf5; --card-hover:#f0f3f9; --sidebar:#ffffff; --border:#d7dce6; --border-focus:#b5bccb; --text:#111827; --text-sub:#374151; --text-dim:#6b7280; }
+.prov .badges { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+.prov .ordn { min-width:22px; height:22px; border-radius:11px; background:var(--accent); color:#fff; font-size:11px; font-weight:800; display:flex; align-items:center; justify-content:center; padding:0 6px; }
+.prov .cat { font-size:10px; font-weight:800; letter-spacing:.04em; padding:3px 7px; border-radius:6px; border:1px solid var(--border); color:var(--text-dim); cursor:pointer; user-select:none; }
+.prov .cat.on { color:var(--green); border-color:var(--green); }
+.prof { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
 [data-base-theme="forest"] { --bg:#0c1512; --surface:#13221d; --surface-active:#1a2f28; --card-hover:#172a24; --sidebar:#0e1714; --border:#223c33; --border-focus:#2f5246; --text:#fff; --text-sub:#c7eedd; --text-dim:#8ecbb0; }
 * { box-sizing:border-box; margin:0; padding:0; }
 body { background:var(--bg); color:var(--text); font-family:'Inter',system-ui,sans-serif; min-height:100vh; }
@@ -176,12 +182,23 @@ textarea.tpl.small { min-height:64px; }
         <div class="stat"><div class="v acc" id="st-en">–</div><div class="k">sources enabled</div></div>
         <div class="stat"><div class="v" id="st-av">–</div><div class="k">plugins loaded</div></div>
         <div class="stat"><div class="v" id="st-repos">–</div><div class="k">repositories</div></div>
-        <div class="stat"><div class="v ok" id="st-state">Ready ✓</div><div class="k">config state</div></div>
+        <div class="stat"><div class="v" id="st-q">–</div><div class="k">qualities</div></div>
+        <div class="stat"><div class="v ok" id="st-state">Saved ✓</div><div class="k">auto-sync on</div></div>
       </div>
+      <section class="card" id="profCard">
+        <div class="sec-head"><div class="sec-title">Profiles<small>each profile is its own addon — own sources, catalogs, filters and formatter; install several side by side</small></div></div>
+        <div class="prof">
+          <select id="profSel" style="min-width:180px"></select>
+          <button class="btn small" id="profNew">＋ New (copy of this one)</button>
+          <button class="btn small" id="profRen">Rename</button>
+          <button class="btn small" id="profDel">Remove</button>
+        </div>
+      </section>
       <section class="card">
         <div class="sec-head"><div class="sec-title">Install your personal addon</div></div>
         <input class="gen-url" id="murl" readonly value="loading…">
         <div class="actions">
+          <a class="btn primary big" id="install" href="#" style="text-decoration:none;text-align:center">▶ Install in Stremio</a>
           <button class="btn primary big" id="copy">📋 Copy Addon URL</button>
           <button class="btn" id="open">Open manifest</button>
         </div>
@@ -203,14 +220,17 @@ textarea.tpl.small { min-height:64px; }
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
           <button class="btn" id="all-on">✓ Enable all</button>
           <button class="btn" id="all-off">✕ Clear all</button>
+          <button class="chipbtn" data-preset="dev">⭐ Developer's choice</button>
           <button class="chipbtn" data-preset="movies">🎬 Movies &amp; Series</button>
           <button class="chipbtn" data-preset="anime">🌸 Anime</button>
           <button class="chipbtn" data-preset="live">📺 Live TV</button>
+          <button class="chipbtn" data-preset="sports">🏏 Live Sports</button>
           <button class="chipbtn" data-preset="core">⭐ Core repos</button>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
           <select id="f-repo"><option value="">All repositories</option></select>
           <select id="f-lang"><option value="">All languages</option></select>
+          <select id="f-type"><option value="">All content types</option></select>
           <label class="qchip" style="padding:7px 12px"><input type="checkbox" id="f-dead" checked> Hide dead</label>
           <label class="qchip" style="padding:7px 12px"><input type="checkbox" id="f-failed"> Hide load-failed</label>
         </div>
@@ -254,6 +274,18 @@ textarea.tpl.small { min-height:64px; }
             <option value="5">Top 5 per tier</option>
             <option value="3">Top 3 per tier</option>
           </select>
+        </div>
+        <div class="opt-row">
+          <div><div class="nm">File size limits (GB)</div><div class="ds">Hide streams smaller / larger than this. Streams whose size is unknown are never hidden. 0 = no limit.</div></div>
+          <div style="display:flex;gap:6px;align-items:center"><input id="opt-smin" type="number" min="0" step="0.5" style="width:80px" placeholder="min"> – <input id="opt-smax" type="number" min="0" step="0.5" style="width:80px" placeholder="max"></div>
+        </div>
+        <div class="opt-row">
+          <div><div class="nm">Group streams by</div><div class="ds">Default = your provider order (then language). Quality = 4K first, then 1080p, … Provider = all links of one provider together.</div></div>
+          <select id="opt-grp"><option value="">Default</option><option value="quality">Quality</option><option value="provider">Provider</option></select>
+        </div>
+        <div class="opt-row">
+          <div><div class="nm">Sort streams</div><div class="ds">Inside each group. Size = largest file first (unknown sizes last).</div></div>
+          <select id="opt-sort"><option value="">Default</option><option value="size">Size (largest first)</option></select>
         </div>
         <div class="opt-row">
           <div><div class="nm">Block CAM / Screeners</div><div class="ds">Drop links detected as CAM, HDTS, TC or screener releases by name or quality.</div></div>
@@ -385,12 +417,16 @@ let DATA = null;
 // dl = search deadline; d = formatter description template. They used to share
 // one key (state.d) — editing the deadline clobbered the description and the
 // deadline itself never reached the generated URL
-let state = { p: {}, c: true, m: false, dl: 25000, q: { on: [2160,1080,720,480,360], tier: 0, cam: 0 }, f: 'builtin', n: '', d: '', order: [], lg: [], lgf: 0 };
+let state = { p: {}, c: true, m: false, dl: 25000, q: { on: [2160,1080,720,480,360], tier: 0, cam: 0 }, f: 'builtin', n: '', d: '', order: [], lg: [], lgf: 0, co: [], smin: 0, smax: 0, grp: '', sort: '' };
 const B64 = s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 const UNB64 = s => decodeURIComponent(escape(atob(s.replace(/-/g,'+').replace(/_/g,'/') + '='.repeat((4 - s.length % 4) % 4))));
-const THEMES = ['slate','charcoal','navy','forest'];
+const THEMES = ['slate','charcoal','navy','forest','light'];
+// providers that returned links most often in live tests (2026-10-08) — a
+// lean default; enabling hundreds of sources loads them all into memory
+const DEV_CHOICE = ['FourKHDHub','HDhub4u','MovieBoxProviderIN','CastleTvProvider','AllMovieLandProvider','CineStream','OttSource','UHDmoviesProvider','Moviesmod','Hindmoviez','CNC Verse','CNC Verse Mobile','OneTouchTV','Bollyflix','VegaMovies','DudeFilms','StreamFlixProvider','KisskhProvider'];
 try { const s = localStorage.getItem('csb_state2'); if (s) state = Object.assign(state, JSON.parse(s)); } catch(e) {}
 if (!Array.isArray(state.lg)) state.lg = [];
+if (!Array.isArray(state.co)) state.co = [];
 // ---------- install identity ----------
 // The manifest URL carries a stable install id, not the config itself: the
 // first save pins the config server-side (/api/installs/<id>) and from then on
@@ -462,6 +498,9 @@ function importCfgObject(cfg) {
   if (Array.isArray(cfg.order)) state.order = cfg.order.filter(x => typeof x === 'string');
   if (Array.isArray(cfg.lg)) state.lg = cfg.lg.filter(x => typeof x === 'string');
   if (cfg.lgf !== undefined) state.lgf = Number(cfg.lgf) || 0;
+  state.co = Array.isArray(cfg.co) ? cfg.co.filter(x => typeof x === 'string') : [];
+  state.smin = Number(cfg.smin) || 0; state.smax = Number(cfg.smax) || 0;
+  state.grp = typeof cfg.grp === 'string' ? cfg.grp : ''; state.sort = typeof cfg.sort === 'string' ? cfg.sort : '';
   if (typeof cfg.fmt === 'string') {
     if (cfg.fmt === 'modern') state.f = 'csb-modern';
     else if (cfg.fmt === 'minimal') state.f = 'csb-minimal';
@@ -482,18 +521,32 @@ function buildCfg() {
   if (state.dl) cfg.d = state.dl;
   if (!Array.isArray(cfg.lg) || !cfg.lg.length) delete cfg.lg;
   if (!cfg.lgf) delete cfg.lgf;
+  if (!Array.isArray(cfg.co) || !cfg.co.length) delete cfg.co;
+  if (!cfg.smin) delete cfg.smin;
+  if (!cfg.smax) delete cfg.smax;
+  if (!cfg.grp) delete cfg.grp;
+  if (!cfg.sort) delete cfg.sort;
   return cfg;
 }
 // every change lands on the backend so the installed manifest URL never changes
 let pushTimer = null;
-function schedulePush(){ clearTimeout(pushTimer); pushTimer = setTimeout(pushInstall, 600); }
+function setSync(t, ok){ const el = document.getElementById('st-state'); if (el) { el.textContent = t; el.className = 'v ' + (ok ? 'ok' : 'err'); } }
+function schedulePush(){ clearTimeout(pushTimer); setSync('Saving…', true); pushTimer = setTimeout(pushInstall, 600); }
 function pushInstall(){
   clearTimeout(pushTimer);
-  try { return fetch('/api/installs/' + INSTALL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(buildCfg()) }); }
-  catch(e) { return Promise.resolve(); }
+  try {
+    return fetch('/api/installs/' + INSTALL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(buildCfg()) })
+      .then(r => r.json()).then(d => { setSync(d && d.ok ? 'Saved ✓' : 'Not saved', !!(d && d.ok)); return d; })
+      .catch(() => setSync('Offline', false));
+  } catch(e) { return Promise.resolve(); }
 }
 function gen() {
   document.getElementById('murl').value = location.origin + '/' + INSTALL + '/manifest.json';
+  const ins = document.getElementById('install');
+  if (ins) ins.href = 'stremio://' + location.host + '/' + INSTALL + '/manifest.json';
+  const q = state.q.on.slice().sort((a,b) => b-a);
+  const lab = t => t >= 2160 ? '4K' : t + 'p';
+  const sq = document.getElementById('st-q'); if (sq) sq.textContent = q.length ? (q.length === 1 ? lab(q[0]) : lab(q[0]) + ' → ' + lab(q[q.length-1])) : 'none';
 }
 
 // ---------- HOME ----------
@@ -502,6 +555,7 @@ function filterState() {
     q: document.getElementById('filter').value.toLowerCase(),
     repo: document.getElementById('f-repo').value,
     lang: document.getElementById('f-lang').value,
+    type: document.getElementById('f-type').value,
     hideDead: document.getElementById('f-dead').checked,
     hideFailed: document.getElementById('f-failed').checked,
   };
@@ -510,6 +564,7 @@ function isVisible(p, fs) {
   if (fs.q && !(p.name+' '+p.internalName+' '+(p.description||'')).toLowerCase().includes(fs.q)) return false;
   if (fs.repo && (!repoOf(p) || repoOf(p).name !== fs.repo)) return false;
   if (fs.lang && (p.language||'') !== fs.lang) return false;
+  if (fs.type && (p.tvTypes||[]).indexOf(fs.type) < 0) return false;
   if (fs.hideDead && p.loaded && p.health === 'down') return false;
   if (fs.hideFailed && !p.loaded) return false;
   return true;
@@ -525,11 +580,23 @@ function renderGrid() {
     const chips = (p.tvTypes||[]).slice(0,3).map(t => '<span class="chip">'+esc(t)+'</span>').join('')
       + (p.language ? '<span class="chip lang">'+esc(p.language)+'</span>' : '')
       + (p.loaded ? (p.health === 'up' ? '<span class="chip up">up</span>' : (p.health === 'down' ? '<span class="chip dead">down</span>' : '')) : '<span class="chip dead">load failed</span>');
+    const on = !!state.p[p.internalName];
+    const ordIdx = on ? state.order.indexOf(p.name) : -1;
+    const catOn = state.c && state.co.indexOf(p.internalName) < 0;
     row.innerHTML =
       '<img src="' + esc(p.iconUrl||'/logo.svg') + '" onerror="this.src=\'/logo.svg\'">' +
       '<div class="grow"><div class="nm">' + esc(p.name) + ' <span style="color:var(--text-dim);font-weight:500">v'+p.version+'</span></div>' +
-      '<div class="ds">' + esc(p.description||'') + '</div><div class="chips">' + chips + '</div></div>';
+      '<div class="ds">' + esc(p.description||'') + '</div><div class="chips">' + chips + '</div></div>' +
+      (on ? '<div class="badges">' + (state.c ? '<span class="cat' + (catOn ? ' on' : '') + '" title="Show this source\'s catalogs in Stremio">CAT ' + (catOn ? 'ON' : 'OFF') + '</span>' : '') +
+        (ordIdx >= 0 ? '<span class="ordn" title="Position in your provider order">' + (ordIdx+1) + '</span>' : '') + '</div>' : '');
     row.onclick = () => { if (state.p[p.internalName]) delete state.p[p.internalName]; else state.p[p.internalName] = 1; save(); renderAll(); };
+    const catEl = row.querySelector('.cat');
+    if (catEl) catEl.onclick = e => {
+      e.stopPropagation();
+      const i = state.co.indexOf(p.internalName);
+      if (i >= 0) state.co.splice(i, 1); else state.co.push(p.internalName);
+      save(); renderGrid();
+    };
     root.append(row);
   });
   updateStats();
@@ -590,6 +657,10 @@ function renderFiltersPage() {
   document.getElementById('opt-cam').checked = !!state.q.cam;
   document.getElementById('opt-m').checked = !!state.m;
   document.getElementById('opt-d').value = String(state.dl || 25000);
+  document.getElementById('opt-smin').value = state.smin ? String(state.smin) : '';
+  document.getElementById('opt-smax').value = state.smax ? String(state.smax) : '';
+  document.getElementById('opt-grp').value = state.grp || '';
+  document.getElementById('opt-sort').value = state.sort || '';
 }
 // ---------- languages (filter + priority sort) ----------
 const LG_LIST = ['Hindi','English','Tamil','Telugu','Malayalam','Kannada','Bengali','Punjabi','Marathi','Japanese','Chinese','Korean','Spanish','Arabic','Turkish','French','German','Russian','Portuguese','Italian'];
@@ -806,7 +877,12 @@ document.getElementById('f-failed').onchange = renderGrid;
 // Enable all / presets only enable what passes the active filters (Hide dead,
 // Hide load-failed, repo/language/search) — enabling everything including the
 // dead ones made every stream request fan out to 420+ providers
-document.getElementById('all-on').onclick = () => { visiblePlugins().forEach(p => state.p[p.internalName] = 1); save(); renderAll(); };
+document.getElementById('all-on').onclick = () => {
+  const vis = visiblePlugins();
+  // every enabled source is loaded into server memory on first use
+  if (vis.length > 120 && !confirm('Enable all ' + vis.length + ' visible sources? Every enabled source runs on every stream request and uses server memory. Narrow the list with the filters first for a faster addon.')) return;
+  vis.forEach(p => state.p[p.internalName] = 1); save(); renderAll();
+};
 document.getElementById('all-off').onclick = () => { state.p = {}; save(); renderAll(); };
 document.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => {
   const preset = b.dataset.preset;
@@ -817,6 +893,8 @@ document.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => {
     if (preset === 'anime' && /Anime|Cartoon|OVA/.test(t)) state.p[p.internalName] = 1;
     if (preset === 'live' && /Live/.test(t)) state.p[p.internalName] = 1;
     if (preset === 'core' && /CNC Repo|Phisher|Megix|raghav/.test((repoOf(p)||{}).name||'')) state.p[p.internalName] = 1;
+    if (preset === 'dev' && DEV_CHOICE.indexOf(p.internalName) >= 0 && p.loaded) state.p[p.internalName] = 1;
+    if (preset === 'sports' && /Live/.test(t) && /sport|cric|football|fifa|ipl|fancode|nba|f1|race|replay|match|live events/i.test(p.name + ' ' + (p.description||''))) state.p[p.internalName] = 1;
   });
   save(); renderAll();
 });
@@ -826,6 +904,11 @@ document.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => {
   state.q.on = Array.from(on); save(); renderFiltersPage(); gen();
 }; });
 document.getElementById('opt-tier').onchange = e => { state.q.tier = parseInt(e.target.value); save(); gen(); };
+document.getElementById('opt-smin').onchange = e => { state.smin = Math.max(0, parseFloat(e.target.value) || 0); save(); };
+document.getElementById('opt-smax').onchange = e => { state.smax = Math.max(0, parseFloat(e.target.value) || 0); save(); };
+document.getElementById('opt-grp').onchange = e => { state.grp = e.target.value; save(); };
+document.getElementById('opt-sort').onchange = e => { state.sort = e.target.value; save(); };
+document.getElementById('f-type').onchange = () => renderGrid();
 document.getElementById('opt-cam').onchange = e => { state.q.cam = e.target.checked ? 1 : 0; save(); gen(); };
 document.getElementById('opt-c').onchange = e => { state.c = e.target.checked; save(); gen(); };
 document.getElementById('opt-m').onchange = e => { state.m = e.target.checked; save(); gen(); };
@@ -856,18 +939,55 @@ document.getElementById('copy').onclick = () => {
 };
 document.getElementById('open').onclick = () => window.open(document.getElementById('murl').value, '_blank');
 
+// ---------- profiles (several installs from one browser) ----------
+function profiles() {
+  let l = []; try { l = JSON.parse(localStorage.getItem('csb_profiles') || '[]'); } catch(e) {}
+  if (!Array.isArray(l)) l = [];
+  if (!FROM_URL && !l.some(x => x.id === INSTALL)) { l.unshift({ id: INSTALL, name: 'Main' }); localStorage.setItem('csb_profiles', JSON.stringify(l)); }
+  return l;
+}
+function saveProfiles(l){ localStorage.setItem('csb_profiles', JSON.stringify(l)); }
+function switchProfile(id){ localStorage.setItem('csb_install', id); localStorage.removeItem('csb_state2'); location.reload(); }
+function renderProfiles() {
+  const card = document.getElementById('profCard');
+  // opened from an installed addon's Configure button: that one install only
+  if (FROM_URL) { card.style.display = 'none'; return; }
+  const sel = document.getElementById('profSel'); sel.innerHTML = '';
+  profiles().forEach(pr => { const o = document.createElement('option'); o.value = pr.id; o.textContent = pr.name; if (pr.id === INSTALL) o.selected = true; sel.append(o); });
+  sel.onchange = () => switchProfile(sel.value);
+  document.getElementById('profNew').onclick = async () => {
+    const name = (prompt('Name for the new profile:', 'Profile ' + (profiles().length + 1)) || '').trim();
+    if (!name) return;
+    const id = 'i' + Math.random().toString(36).slice(2, 12);
+    // new profile starts as a copy of this one (its own addon URL)
+    await fetch('/api/installs/' + id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(buildCfg()) }).catch(() => {});
+    const l = profiles(); l.push({ id, name }); saveProfiles(l); switchProfile(id);
+  };
+  document.getElementById('profRen').onclick = () => {
+    const l = profiles(); const cur = l.find(x => x.id === INSTALL); if (!cur) return;
+    const name = (prompt('Rename profile:', cur.name) || '').trim(); if (!name) return;
+    cur.name = name; saveProfiles(l); renderProfiles();
+  };
+  document.getElementById('profDel').onclick = () => {
+    const l = profiles(); if (l.length <= 1) { alert('This is your only profile.'); return; }
+    const cur = l.find(x => x.id === INSTALL);
+    if (!confirm('Remove profile "' + (cur ? cur.name : INSTALL) + '" from this page? An addon already installed with its URL keeps working.')) return;
+    const rest = l.filter(x => x.id !== INSTALL); saveProfiles(rest); switchProfile(rest[0].id);
+  };
+}
 async function boot() {
+  renderProfiles();
   document.getElementById('syncLine').innerHTML = '<span class="spin"></span> loading…';
-  if (FROM_URL) {
-    // opened from the installed addon's Configure button: the server record is
-    // the source of truth; a legacy URL whose config is still only embedded in
-    // the b64 segment is the fallback (it gets pinned on the first save)
+  {
+    // the server record is the source of truth for every install (configure
+    // button or a profile picked on this page); a legacy URL whose config is
+    // still only embedded in the b64 segment is the fallback (pinned on save)
     let imported = false;
     try {
       const r = await fetch('/api/installs/' + INSTALL); const d = await r.json();
       if (d && d.config) imported = importCfgObject(d.config);
     } catch(e) {}
-    if (!imported) {
+    if (!imported && FROM_URL) {
       const m = location.pathname.match(/^\/([A-Za-z0-9_-]+)\/configure\/?$/);
       if (m) { try { imported = importCfgObject(JSON.parse(UNB64(m[1]))); } catch(e) {} }
     }
@@ -878,13 +998,15 @@ async function boot() {
     // first-visit default only — when a selection was imported (URL install or
     // saved state) it is the user's exact set and must not be padded
     if (Object.keys(state.p).length === 0) {
-      allPlugins().forEach(p => { if (p.loaded && p.health !== 'down') state.p[p.internalName] = 1; });
+      allPlugins().forEach(p => { if (p.loaded && DEV_CHOICE.indexOf(p.internalName) >= 0) state.p[p.internalName] = 1; });
     }
     // populate repo + language filters
     const fr = document.getElementById('f-repo');
     (DATA.repos||[]).forEach(r2 => { const o = document.createElement('option'); o.value = r2.name; o.textContent = r2.name; fr.append(o); });
     const fl = document.getElementById('f-lang');
     Array.from(new Set(allPlugins().map(p => p.language).filter(Boolean))).sort().forEach(l => { const o = document.createElement('option'); o.value = l; o.textContent = l; fl.append(o); });
+    const ft = document.getElementById('f-type');
+    Array.from(new Set(allPlugins().flatMap(p => p.tvTypes||[]))).sort().forEach(t => { const o = document.createElement('option'); o.value = t; o.textContent = t + ' (' + allPlugins().filter(p => (p.tvTypes||[]).indexOf(t) >= 0).length + ')'; ft.append(o); });
     renderAll();
   } catch(e) {
     document.getElementById('syncLine').textContent = '⚠ failed to load repo data';
