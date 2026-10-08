@@ -517,9 +517,16 @@ object Streams {
         val mine = java.util.concurrent.CompletableFuture<List<Map<String, Any?>>>()
         val leader = inflight.putIfAbsent(cacheKey, mine)
         if (leader != null) {
-            val wait = (cfg.deadlineMs ?: Cfg.deadlineMs) + 3000
+            // the leader answers at its deadline plus formatting time; wait well past it
+            val wait = (cfg.deadlineMs ?: Cfg.deadlineMs) + 20_000
             AppLogger.i("Streams: $kind/$id joining in-flight scrape")
-            return runCatching { leader.get(wait, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrElse { emptyList() }
+            return runCatching { leader.get(wait, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrElse {
+                // leader still busy: whatever it has cached so far beats nothing
+                runCatching {
+                    @Suppress("UNCHECKED_CAST")
+                    (mapper.readValue<Map<String, Any?>>(Store.get(cacheKey, 6L * 3600 * 1000) ?: "{}")["streams"] as? List<Map<String, Any?>>)
+                }.getOrNull() ?: emptyList()
+            }
         }
         try {
             val r = streamsForInternal(cfg, kind, id, cacheKey, respond = true)
@@ -716,14 +723,15 @@ object Streams {
                         } catch (t: Throwable) {
                             ProviderOutcome(emptyList(), t)
                         }
-                        val bname = key.substringBefore('#')
+                        val bname = key.removeSuffix(":r")
                         if (res.links.isNotEmpty()) {
                             succeeded.add(key)
                             breakerResult(bname, true)
                             channel.send(Triple(label, lang, res.links))
                         } else if (res.error != null) {
                             failed.add(key)
-                            breakerResult(bname, false)
+                            // the retry wave must not double-count one request's failure
+                            if (!key.endsWith(":r")) breakerResult(bname, false)
                             val e = res.error
                             if (e is kotlinx.coroutines.TimeoutCancellationException || e is java.io.IOException ||
                                 e.cause is java.io.IOException) retryable.add(key)
@@ -800,7 +808,7 @@ object Streams {
                 val allPairs = Repos.enabledProviders(cfg.providers).flatMap { (info, provs) ->
                     provs.filter { it.supportedTypes.intersect(want).isNotEmpty() }.map { info to it }
                 }.sortedBy { rank[it.first.name.lowercase()] ?: 1000 }
-                val pairs = allPairs.filter { !breakerOpen(it.first.internalName) }
+                val pairs = allPairs.filter { !breakerOpen(it.first.internalName + "#" + System.identityHashCode(it.second)) }
                 if (pairs.size < allPairs.size) AppLogger.i("Streams: $kind/$id skipping ${allPairs.size - pairs.size} providers with an open breaker")
                 fanOutPhase(Cfg.providerTimeoutMs + 30_000, "$kind/$id", "pass1") {
                     kotlinx.coroutines.coroutineScope {
@@ -826,7 +834,7 @@ object Streams {
             // Retry ONLY providers that FAILED (threw / timed out / null load) -
             // providers that searched fine and have no content are not retried.
             fanOutSummary(kind, id, "pass1", attempted, succeeded, noContent, failed, errorSamples)
-            val toRetry = failed.filter { it in retryable && !breakerOpen(it.substringBefore('#')) }
+            val toRetry = failed.filter { it in retryable && !breakerOpen(it) }
             if (toRetry.isNotEmpty()) {
                 AppLogger.i("Streams: retrying ${toRetry.size} of ${failed.size} failed providers (transient errors only)")
                 fanOutPhase(Cfg.providerTimeoutMs + 30_000, "$kind/$id", "retry") {
