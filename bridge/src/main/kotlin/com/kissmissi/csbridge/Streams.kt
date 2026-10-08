@@ -196,7 +196,7 @@ object Streams {
         return stream
     }
 
-    private fun metaJson(link: ExtractorLink, provider: String): String = mapper.writeValueAsString(
+    private fun metaJson(link: ExtractorLink, provider: String, lang: String? = null): String = mapper.writeValueAsString(
         linkedMapOf<String, Any?>(
             "provider" to provider,
             "linkName" to link.name,
@@ -204,6 +204,10 @@ object Streams {
             "quality" to link.quality,
             "url" to link.url,
             "kind" to link.type.name,
+            // provider's primary language (repo metadata / plugin lang) — the
+            // formatter glue fills {stream.languages} with it when the link
+            // text itself carries no language tokens
+            "lang" to lang,
         )
     )
 
@@ -357,8 +361,8 @@ object Streams {
     private fun streamsForInternal(cfg: BridgeConfig, kind: String, id: String, cacheKey: String?, respond: Boolean): List<Map<String, Any?>> {
         val t0 = System.currentTimeMillis()
         val deadline = cfg.deadlineMs ?: Cfg.deadlineMs
-        val channel = Channel<Pair<String, List<ExtractorLink>>>(Channel.UNLIMITED)
-        val collected = ArrayList<Pair<String, List<ExtractorLink>>>()
+        val channel = Channel<Triple<String, String?, List<ExtractorLink>>>(Channel.UNLIMITED)
+        val collected = ArrayList<Triple<String, String?, List<ExtractorLink>>>()
         val ctxRef = java.util.concurrent.atomic.AtomicReference<FmtCtx?>(null)
         // resolver failure (no fan-out at all) must not poison the cache with a
         // "complete" empty entry — marked by fetchAll, checked before caching
@@ -385,7 +389,7 @@ object Streams {
                 val elapsed = System.currentTimeMillis() - start
                 if (elapsed >= Cfg.fastWindowMs) {
                     val (n, provs) = synchronized(collected) {
-                        collected.sumOf { it.second.size } to collected.map { it.first }.distinct().size
+                        collected.sumOf { it.third.size } to collected.map { it.first }.distinct().size
                     }
                     if (n >= Cfg.fastMinStreams && provs >= Cfg.fastMinProviders) break
                 }
@@ -432,20 +436,20 @@ object Streams {
         return result
     }
 
-    private fun buildResult(cfg: BridgeConfig, collected: List<Pair<String, List<ExtractorLink>>>, ctx: FmtCtx?): List<Map<String, Any?>> {
+    private fun buildResult(cfg: BridgeConfig, collected: List<Triple<String, String?, List<ExtractorLink>>>, ctx: FmtCtx?): List<Map<String, Any?>> {
         data class Row(val stream: Map<String, Any?>, val label: String, val link: ExtractorLink)
         // one templates lookup per serve; null = built-in naming everywhere
         val templates = runCatching { Formatter.templates(cfg.fmt.f, cfg.fmt.n, cfg.fmt.d) }.getOrNull()
         val rank = cfg.order.withIndex().associate { it.value.lowercase() to it.index }
-        data class Cand(val label: String, val link: ExtractorLink)
+        data class Cand(val label: String, val lang: String?, val link: ExtractorLink)
         val candidates = ArrayList<Cand>()
         val seen = HashSet<String>()
-        for ((label, links) in collected) {
+        for ((label, lang, links) in collected) {
             for (link in links) {
                 if (cfg.blockCam && isCam(link)) continue
                 val tier = tierOf(link)
                 if (tier != 0 && tier !in cfg.qualities) continue
-                if (seen.add(link.url)) candidates.add(Cand(label, link))
+                if (seen.add(link.url)) candidates.add(Cand(label, lang, link))
             }
         }
         // format the whole serve in ONE polyglot hop (torrent/magnet links keep the
@@ -457,7 +461,7 @@ object Streams {
             candidates.forEachIndexed { i, cand ->
                 if (cand.link.type != ExtractorLinkType.TORRENT && cand.link.type != ExtractorLinkType.MAGNET && cand.link.url.isNotBlank()) {
                     idx.add(i)
-                    items.add(metaJson(cand.link, cand.label) to ctxJson(ctx))
+                    items.add(metaJson(cand.link, cand.label, cand.lang) to ctxJson(ctx))
                 }
             }
             if (items.isNotEmpty()) {
@@ -489,7 +493,7 @@ object Streams {
         cfg: BridgeConfig,
         kind: String,
         id: String,
-        channel: Channel<Pair<String, List<ExtractorLink>>>,
+        channel: Channel<Triple<String, String?, List<ExtractorLink>>>,
         ctxRef: java.util.concurrent.atomic.AtomicReference<FmtCtx?>,
         noAttempt: java.util.concurrent.atomic.AtomicBoolean,
     ) {
@@ -499,9 +503,9 @@ object Streams {
         val noContent = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val failed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val errorSamples = java.util.concurrent.ConcurrentHashMap<String, String>()
-        val retryDefs = java.util.concurrent.ConcurrentHashMap<String, Pair<String, suspend () -> ProviderOutcome>>()
+        val retryDefs = java.util.concurrent.ConcurrentHashMap<String, Triple<String, String?, suspend () -> ProviderOutcome>>()
 
-        fun launchProvider(scope: kotlinx.coroutines.CoroutineScope, label: String, key: String, work: suspend () -> ProviderOutcome) {
+        fun launchProvider(scope: kotlinx.coroutines.CoroutineScope, label: String, key: String, lang: String?, work: suspend () -> ProviderOutcome) {
             attempted.add(key)
             scope.launch(scrapeDispatcher) {
                 try {
@@ -518,7 +522,7 @@ object Streams {
                         }
                         if (res.links.isNotEmpty()) {
                             succeeded.add(key)
-                            channel.send(label to res.links)
+                            channel.send(Triple(label, lang, res.links))
                         } else if (res.error != null) {
                             failed.add(key)
                             errorSamples.putIfAbsent(label, "${res.error::class.java.simpleName}: ${res.error.message?.take(120) ?: "no message"}")
@@ -548,7 +552,8 @@ object Streams {
                             for ((info, provs) in Repos.enabledProviders(cfg.providers)) {
                                 if (info.internalName != provName) continue
                                 for (prov in provs) {
-                                    launchProvider(this, info.name, info.internalName + "#" + System.identityHashCode(prov)) {
+                                    val plang = info.language ?: prov.lang
+                                    launchProvider(this, info.name, info.internalName + "#" + System.identityHashCode(prov), plang) {
                                         val loaded = try {
                                             prov.load(url)
                                         } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
@@ -596,8 +601,9 @@ object Streams {
                     kotlinx.coroutines.coroutineScope {
                         for ((info, prov) in pairs) {
                             val key = info.internalName + "#" + System.identityHashCode(prov)
-                            retryDefs[key] = info.name to { scrapeProvider(prov, titleInfo, requestedS, requestedE) }
-                            launchProvider(this, info.name, key) {
+                            val plang = info.language ?: prov.lang
+                            retryDefs[key] = Triple(info.name, plang) { scrapeProvider(prov, titleInfo, requestedS, requestedE) }
+                            launchProvider(this, info.name, key, plang) {
                                 scrapeProvider(prov, titleInfo, requestedS, requestedE)
                             }
                         }
@@ -621,8 +627,8 @@ object Streams {
                 fanOutPhase(Cfg.providerTimeoutMs + 30_000, "$kind/$id", "retry") {
                     kotlinx.coroutines.coroutineScope {
                         for (key in failed) {
-                            retryDefs[key]?.let { (label, work) ->
-                                launchProvider(this, label, key + ":r", work)
+                            retryDefs[key]?.let { (label, lang, work) ->
+                                launchProvider(this, label, key + ":r", lang, work)
                             }
                         }
                     }

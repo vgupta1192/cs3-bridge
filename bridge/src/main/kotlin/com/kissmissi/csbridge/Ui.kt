@@ -760,9 +760,12 @@ async function boot() {
   document.getElementById('syncLine').innerHTML = '<span class="spin"></span> loading…';
   try {
     const r = await fetch('/api/repos'); DATA = await r.json();
-    // first-visit default: enable loaded, non-dead plugins (all 420 incl. the
-    // dead ones was the old default and made every request fan out uselessly)
-    allPlugins().forEach(p => { if (!(p.internalName in state.p) && p.loaded && p.health !== 'down') state.p[p.internalName] = 1; });
+    // first-visit default only — when a selection was imported from the URL
+    // (/<cfg>/configure) it is the user's exact installed set and must not be
+    // padded with every other loaded plugin
+    if (Object.keys(state.p).length === 0) {
+      allPlugins().forEach(p => { if (p.loaded && p.health !== 'down') state.p[p.internalName] = 1; });
+    }
     // populate repo + language filters
     const fr = document.getElementById('f-repo');
     (DATA.repos||[]).forEach(r2 => { const o = document.createElement('option'); o.value = r2.name; o.textContent = r2.name; fr.append(o); });

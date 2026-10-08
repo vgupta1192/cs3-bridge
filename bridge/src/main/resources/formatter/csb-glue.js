@@ -156,6 +156,29 @@
     return out.length ? out : null;
   }
 
+  // CloudStream lang codes ("hi", "en-US", …) -> engine language names. The
+  // bridge tags every link with its provider's primary language because most
+  // link names carry no language tokens (Stream Master does the same with
+  // per-provider defaults).
+  const LANG_BY_CODE = {
+    hi: "Hindi", en: "English", ta: "Tamil", te: "Telugu", ml: "Malayalam", kn: "Kannada",
+    bn: "Bengali", pa: "Punjabi", mr: "Marathi", ja: "Japanese", ko: "Korean", zh: "Chinese",
+    es: "Spanish", fr: "French", de: "German", tr: "Turkish", ar: "Arabic", pt: "Portuguese",
+    ru: "Russian", it: "Italian", id: "Indonesian", th: "Thai", vi: "Vietnamese", ur: "Urdu",
+    uk: "Ukrainian", pl: "Polish", nl: "Dutch", fa: "Persian", fil: "Filipino", tl: "Filipino",
+  };
+
+  function langOf(m, text) {
+    const parsed = parseLanguages(text);
+    if (parsed) return parsed;
+    // explicit dub track on a foreign provider = English audio (Stream Master:
+    // anime SUB = Japanese, DUB = English)
+    if (/\bdubs?\b|\bdubbed\b/i.test(text)) return ["English"];
+    const code = String(m && m.lang ? m.lang : "").split("-")[0].toLowerCase();
+    const byCode = LANG_BY_CODE[code];
+    return byCode ? [byCode] : null;
+  }
+
   function langMeta(names) {
     if (!names || !names.length) return { names: null, emojis: null, codes: null, small: null };
     const codes = names.map((n) => { try { return ENGINE.languageToCode(n) || null; } catch (e) { return null; } });
@@ -194,7 +217,7 @@
     const q = Number(m.quality) || 0;
     const group = pick(/-([A-Za-z0-9]{2,12})(?:\.(?:mkv|mp4|avi))?$/, filenameRaw);
     const yearM = filenameRaw.match(/\b(19[3-9]\d|20[0-4]\d)\b/);
-    const langs = parseLanguages(text);
+    const langs = langOf(m, text);
     return {
       filename: filenameRaw || null,
       size: parseSizeBytes(text),
