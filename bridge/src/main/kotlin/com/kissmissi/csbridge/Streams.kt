@@ -413,7 +413,7 @@ object Streams {
 
     // ---- playable-link check (background only, never on the response path) ----
     // Before the full list is cached, links are probed with a 1-byte ranged GET;
-    // definitively dead ones (404/410, HTML error pages, unknown host, refused)
+    // definitively dead ones (404/410/451, unknown host, connection refused)
     // are dropped so repeat taps only show links that open. Timeouts are kept.
     private val validateOn = System.getenv("CSBRIDGE_VALIDATE") != "0"
     private val validateMax = System.getenv("CSBRIDGE_VALIDATE_MAX")?.toIntOrNull() ?: 60
@@ -438,10 +438,9 @@ object Streams {
             val b = okhttp3.Request.Builder().url(url).header("Range", "bytes=0-0")
             headers.forEach { (k, v) -> runCatching { b.header(k, v) } }
             if (headers.keys.none { it.equals("user-agent", true) }) b.header("user-agent", com.lagradost.cloudstream3.USER_AGENT)
-            probeClient.newCall(b.build()).execute().use { r ->
-                val html = (r.header("Content-Type") ?: "").contains("text/html", true)
-                r.code == 404 || r.code == 410 || r.code == 451 || (r.code >= 400 && html)
-            }
+            // 401/403 are often UA/referer/IP-bound CDN answers that still play in
+            // the app's player — only "gone" answers count as dead
+            probeClient.newCall(b.build()).execute().use { r -> r.code == 404 || r.code == 410 || r.code == 451 }
         } catch (e: java.net.UnknownHostException) { true
         } catch (e: java.net.ConnectException) { true
         } catch (e: Exception) { false }
