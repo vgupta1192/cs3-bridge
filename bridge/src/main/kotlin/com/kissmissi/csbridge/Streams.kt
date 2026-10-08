@@ -607,14 +607,19 @@ object Streams {
                 // priority lane: once enough of the user's top-ranked providers
                 // have answered with links, serve straight away
                 if (respond && priority.isNotEmpty() && elapsed >= Cfg.priorityMinMs) {
+                    // count only links that survive this install's filters
+                    // (torrents off, quality tiers, cam, language) — raw link
+                    // counts sent early answers that filtered down to 0 streams
                     val (n, pdone) = synchronized(collected) {
-                        collected.sumOf { it.third.size } to collected.map { it.first.lowercase() }.filter { it in priority }.distinct().size
+                        val useful = collected.filter { usable(cfg, it.third, it.second) > 0 }
+                        useful.sumOf { usable(cfg, it.third, it.second) } to useful.map { it.first.lowercase() }.filter { it in priority }.distinct().size
                     }
                     if (pdone >= Cfg.priorityMinProviders && n >= Cfg.priorityMinStreams) break
                 }
                 if (elapsed >= Cfg.fastWindowMs) {
                     val (n, provs) = synchronized(collected) {
-                        collected.sumOf { it.third.size } to collected.map { it.first }.distinct().size
+                        val useful = collected.filter { usable(cfg, it.third, it.second) > 0 }
+                        useful.sumOf { usable(cfg, it.third, it.second) } to useful.map { it.first }.distinct().size
                     }
                     if (n >= Cfg.fastMinStreams && provs >= Cfg.fastMinProviders) break
                 }
@@ -671,6 +676,19 @@ object Streams {
             }
         }
         return result
+    }
+
+    /** How many of [links] this install would actually show (mirrors buildResult's filters). */
+    private fun usable(cfg: BridgeConfig, links: List<ExtractorLink>, lang: String?): Int = links.count { link ->
+        if (link.url.isBlank()) return@count false
+        if ((link.type == ExtractorLinkType.TORRENT || link.type == ExtractorLinkType.MAGNET) && !cfg.magnets) return@count false
+        if (cfg.blockCam && isCam(link)) return@count false
+        val tier = tierOf(link)
+        if (tier != 0 && tier !in cfg.qualities) return@count false
+        if (cfg.langs.isNotEmpty() && cfg.langFilter > 0) {
+            val ls = linkLanguages(link, lang)
+            if (ls.isEmpty()) cfg.langFilter == 1 else ls.any { cfg.langs.contains(it) }
+        } else true
     }
 
     private fun buildResult(cfg: BridgeConfig, collected: List<Triple<String, String?, List<ExtractorLink>>>, ctx: FmtCtx?, bg: Boolean = false): List<Map<String, Any?>> {
