@@ -196,35 +196,29 @@ object Streams {
         return stream
     }
 
-    /** AIOStreams-formatted stream map; null = fall back to the built-in naming. */
-    private fun formattedStream(
-        link: ExtractorLink,
-        provider: String,
-        templates: Formatter.Templates,
-        ctx: FmtCtx?,
-    ): Map<String, Any?>? {
-        if (link.url.isBlank()) return null
-        if (link.type == ExtractorLinkType.TORRENT || link.type == ExtractorLinkType.MAGNET) return null
-        val metaJson = mapper.writeValueAsString(
-            linkedMapOf<String, Any?>(
-                "provider" to provider,
-                "linkName" to link.name,
-                "source" to link.source,
-                "quality" to link.quality,
-                "url" to link.url,
-                "kind" to link.type.name,
-            )
+    private fun metaJson(link: ExtractorLink, provider: String): String = mapper.writeValueAsString(
+        linkedMapOf<String, Any?>(
+            "provider" to provider,
+            "linkName" to link.name,
+            "source" to link.source,
+            "quality" to link.quality,
+            "url" to link.url,
+            "kind" to link.type.name,
         )
-        val ctxJson = mapper.writeValueAsString(
-            linkedMapOf<String, Any?>(
-                "mediaType" to (ctx?.kind ?: "movie"),
-                "title" to ctx?.title,
-                "year" to ctx?.year,
-                "seasonNum" to ctx?.season,
-                "episodeNum" to ctx?.episode,
-            )
+    )
+
+    private fun ctxJson(ctx: FmtCtx?): String = mapper.writeValueAsString(
+        linkedMapOf<String, Any?>(
+            "mediaType" to (ctx?.kind ?: "movie"),
+            "title" to ctx?.title,
+            "year" to ctx?.year,
+            "seasonNum" to ctx?.season,
+            "episodeNum" to ctx?.episode,
         )
-        val out = runCatching { Formatter.render(templates, metaJson, ctxJson) }.getOrNull() ?: return null
+    )
+
+    /** AIOStreams-formatted stream map from a batch-rendered entry. */
+    private fun streamFromRendered(out: Formatter.Rendered, link: ExtractorLink, provider: String): Map<String, Any?> {
         val headers = runCatching { link.getAllHeaders().filter { it.value.isNotBlank() } }.getOrDefault(emptyMap())
         val stream = linkedMapOf<String, Any?>(
             "name" to out.name,
@@ -274,44 +268,86 @@ object Streams {
     }
 
 
+    /** Per-provider outcome: links, or the error that made the scrape fail (retryable). */
+    class ProviderOutcome(val links: List<ExtractorLink>, val error: Throwable? = null)
+
     private suspend fun scrapeProvider(
         prov: MainAPI,
         titleInfo: TitleInfo?,
         season: Int?,
         episode: Int?,
         matchUrl: String? = null,
-    ): List<ExtractorLink> = withTimeout(Cfg.providerTimeoutMs) {
+    ): ProviderOutcome = withTimeout(Cfg.providerTimeoutMs) {
         val url = matchUrl ?: run {
-            val results = runCatching {
+            val results = try {
                 prov.search(titleInfo?.name ?: "", 1)?.items ?: prov.search(titleInfo?.name ?: "") ?: emptyList()
-            }.onFailure { if (it is CancellationException) throw it }.getOrDefault(emptyList())
+            } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
+                return@withTimeout ProviderOutcome(emptyList(), t)
+            } catch (t: CancellationException) {
+                throw t
+            } catch (t: Throwable) {
+                return@withTimeout ProviderOutcome(emptyList(), t)
+            }
             results.firstOrNull { matches(it, titleInfo?.name ?: "", titleInfo?.year) }?.url
-        } ?: return@withTimeout emptyList()
-        val loaded = runCatching { prov.load(url) }.onFailure { if (it is CancellationException) throw it }.getOrNull()
-            ?: return@withTimeout emptyList()
-        runCatching { linksFromResponse(prov, loaded, season, episode) }
-            .onFailure { if (it is CancellationException) throw it }.getOrDefault(emptyList())
+        } ?: return@withTimeout ProviderOutcome(emptyList())
+        val loaded = try {
+            prov.load(url)
+        } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
+            return@withTimeout ProviderOutcome(emptyList(), t)
+        } catch (t: CancellationException) {
+            throw t
+        } catch (t: Throwable) {
+            return@withTimeout ProviderOutcome(emptyList(), t)
+        } ?: return@withTimeout ProviderOutcome(emptyList(), IllegalStateException("load returned null"))
+        try {
+            ProviderOutcome(linksFromResponse(prov, loaded, season, episode))
+        } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
+            ProviderOutcome(emptyList(), t)
+        } catch (t: CancellationException) {
+            throw t
+        } catch (t: Throwable) {
+            ProviderOutcome(emptyList(), t)
+        }
     }
 
 
-    private val rescraping = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    /** cacheKey -> a scrape/rescrape for this key is currently running (dedupes rescrapes against live scrapes). */
+    private val activeScrapes = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 
     /**
-     * Background re-scrape for a cached entry that was written before its scrape
-     * finished ("incomplete"). Deduped per cache key; overwrites the cache with
-     * the full merged list when done.
+     * Background re-scrape: for a cache entry written before its scrape finished
+     * ("incomplete"), or a degraded low-stream entry old enough to be worth
+     * refreshing (see [maybeRescrapeDegraded]). Deduped per cache key and against
+     * a still-running scrape for the same key; overwrites the cache with the full
+     * merged list when done.
      */
     fun rescrapeAsync(cfg: BridgeConfig, kind: String, id: String, cacheKey: String) {
-        if (rescraping.putIfAbsent(cacheKey, true) != null) return
+        if (activeScrapes.putIfAbsent(cacheKey, true) != null) return
         scrapeScope.launch {
             try {
                 streamsForInternal(cfg, kind, id, cacheKey, respond = false)
             } catch (t: Throwable) {
                 AppLogger.i("Streams: rescrape failed $kind/$id: ${t.message}")
             } finally {
-                rescraping.remove(cacheKey)
+                activeScrapes.remove(cacheKey)
             }
         }
+    }
+
+    /**
+     * Self-heal for degraded entries: an entry with very few streams that has sat
+     * for a while gets one background rescrape (bounded by Cfg.rescrapeMinAgeMs
+     * between rescrapes per key, since the rescrape rewrites the timestamp).
+     * Without this, an entry scraped during a provider outage/rate-limit window
+     * would serve its thin result as final for the whole cache TTL.
+     */
+    fun maybeRescrapeDegraded(cfg: BridgeConfig, kind: String, id: String, cacheKey: String, entry: Map<String, Any?>) {
+        val count = (entry["streams"] as? List<*>)?.size ?: 0
+        if (count >= Cfg.rescrapeMinStreams) return
+        val ts = (entry["ts"] as? Number)?.toLong() ?: 0L
+        if (ts > 0L && System.currentTimeMillis() - ts < Cfg.rescrapeMinAgeMs) return
+        AppLogger.i("Streams: degraded cache entry $kind/$id ($count streams), rescraping in background")
+        rescrapeAsync(cfg, kind, id, cacheKey)
     }
 
     /** Main entry: streams for a stremio-style request. Returns after the deadline; scraping continues detached. */
@@ -325,10 +361,12 @@ object Streams {
         val collected = ArrayList<Pair<String, List<ExtractorLink>>>()
         val ctxRef = java.util.concurrent.atomic.AtomicReference<FmtCtx?>(null)
 
+        if (cacheKey != null) activeScrapes[cacheKey] = true
         val parent = scrapeScope.launch {
             fetchAll(cfg, kind, id, channel, ctxRef)
             channel.close()
         }
+        parent.invokeOnCompletion { if (cacheKey != null) activeScrapes.remove(cacheKey) }
 
         runBlocking {
             val start = System.currentTimeMillis()
@@ -346,7 +384,7 @@ object Streams {
         if (cacheKey != null) {
             // cache what we have now, marking whether stragglers are still running
             runCatching {
-                Store.put(cacheKey, mapper.writeValueAsString(mapOf("streams" to result, "incomplete" to !parent.isCompleted)))
+                Store.put(cacheKey, mapper.writeValueAsString(mapOf("streams" to result, "incomplete" to !parent.isCompleted, "ts" to System.currentTimeMillis())))
             }
         }
 
@@ -363,8 +401,11 @@ object Streams {
                     }
                     val full = buildResult(cfg, collected, ctxRef.get())
                     if (full.isNotEmpty() || respond) {
-                        Store.put(cacheKey, mapper.writeValueAsString(mapOf("streams" to full, "incomplete" to false)))
-                        AppLogger.i("Streams: $kind/$id late merge -> ${full.size} streams (cache updated)")
+                        // a 30s lull can break the loop while the parent scrape is
+                        // still running - keep the incomplete flag honest so the
+                        // next request can still trigger one deduped rescrape
+                        Store.put(cacheKey, mapper.writeValueAsString(mapOf("streams" to full, "incomplete" to !parent.isCompleted, "ts" to System.currentTimeMillis())))
+                        AppLogger.i("Streams: $kind/$id late merge -> ${full.size} streams (cache updated, scrape complete=${parent.isCompleted})")
                     }
                 }
             }
@@ -377,19 +418,41 @@ object Streams {
         // one templates lookup per serve; null = built-in naming everywhere
         val templates = runCatching { Formatter.templates(cfg.fmt.f, cfg.fmt.n, cfg.fmt.d) }.getOrNull()
         val rank = cfg.order.withIndex().associate { it.value.lowercase() to it.index }
-        var rows = ArrayList<Row>()
+        data class Cand(val label: String, val link: ExtractorLink)
+        val candidates = ArrayList<Cand>()
         val seen = HashSet<String>()
         for ((label, links) in collected) {
             for (link in links) {
                 if (cfg.blockCam && isCam(link)) continue
                 val tier = tierOf(link)
                 if (tier != 0 && tier !in cfg.qualities) continue
-                val st = if (templates != null)
-                    formattedStream(link, label, templates, ctx) ?: toStremioStream(link, label, cfg) ?: continue
-                else
-                    toStremioStream(link, label, cfg) ?: continue
-                if (seen.add(link.url)) rows.add(Row(st, label, link))
+                if (seen.add(link.url)) candidates.add(Cand(label, link))
             }
+        }
+        // format the whole serve in ONE polyglot hop (torrent/magnet links keep the
+        // built-in externalUrl handling; batch entries that fail = built-in naming)
+        val formatted = HashMap<Int, Formatter.Rendered?>()
+        if (templates != null) {
+            val idx = ArrayList<Int>()
+            val items = ArrayList<Pair<String, String>>()
+            candidates.forEachIndexed { i, cand ->
+                if (cand.link.type != ExtractorLinkType.TORRENT && cand.link.type != ExtractorLinkType.MAGNET && cand.link.url.isNotBlank()) {
+                    idx.add(i)
+                    items.add(metaJson(cand.link, cand.label) to ctxJson(ctx))
+                }
+            }
+            if (items.isNotEmpty()) {
+                val rendered = runCatching { Formatter.renderBatch(templates, items) }.getOrElse { emptyList() }
+                rendered.forEachIndexed { j, r -> formatted[idx[j]] = r }
+            }
+        }
+        var rows = ArrayList<Row>()
+        candidates.forEachIndexed { i, cand ->
+            val st = if (cand.link.type == ExtractorLinkType.TORRENT || cand.link.type == ExtractorLinkType.MAGNET) null
+            else formatted[i]?.let { streamFromRendered(it, cand.link, cand.label) }
+                ?: toStremioStream(cand.link, cand.label, cfg)
+                ?: return@forEachIndexed
+            rows.add(Row(st, cand.label, cand.link))
         }
         rows.sortBy { rank[it.label.lowercase()] ?: 1000 }
         if (cfg.maxPerTier > 0) {
@@ -412,18 +475,34 @@ object Streams {
         val sem = Semaphore(Cfg.maxConcurrent)
         val attempted = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         val succeeded = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-        val retryDefs = java.util.concurrent.ConcurrentHashMap<String, Pair<String, suspend () -> List<ExtractorLink>>>()
+        val noContent = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val failed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val errorSamples = java.util.concurrent.ConcurrentHashMap<String, String>()
+        val retryDefs = java.util.concurrent.ConcurrentHashMap<String, Pair<String, suspend () -> ProviderOutcome>>()
 
-        fun launchProvider(label: String, key: String, work: suspend () -> List<ExtractorLink>) {
+        fun launchProvider(label: String, key: String, work: suspend () -> ProviderOutcome) {
             attempted.add(key)
             this@coroutineScope.launch(scrapeDispatcher) {
                 try {
                     sem.acquire()
                     try {
-                        val res = work()
-                        if (res.isNotEmpty()) {
+                        val res = try {
+                            work()
+                        } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
+                            ProviderOutcome(emptyList(), t)
+                        } catch (t: CancellationException) {
+                            throw t
+                        } catch (t: Throwable) {
+                            ProviderOutcome(emptyList(), t)
+                        }
+                        if (res.links.isNotEmpty()) {
                             succeeded.add(key)
-                            channel.send(label to res)
+                            channel.send(label to res.links)
+                        } else if (res.error != null) {
+                            failed.add(key)
+                            errorSamples.putIfAbsent(label, "${res.error::class.java.simpleName}: ${res.error.message?.take(120) ?: "no message"}")
+                        } else {
+                            noContent.add(key)
                         }
                     } finally {
                         sem.release()
@@ -447,8 +526,24 @@ object Streams {
                         if (info.internalName != provName) continue
                         for (prov in provs) {
                             launchProvider(info.name, info.internalName + "#" + System.identityHashCode(prov)) {
-                                val loaded = runCatching { prov.load(url) }.onFailure { if (it is CancellationException) throw it }.getOrNull()
-                                linksFromResponse(prov, loaded, requestedS, requestedE)
+                                val loaded = try {
+                                    prov.load(url)
+                                } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
+                                    return@launchProvider ProviderOutcome(emptyList(), t)
+                                } catch (t: CancellationException) {
+                                    throw t
+                                } catch (t: Throwable) {
+                                    return@launchProvider ProviderOutcome(emptyList(), t)
+                                } ?: return@launchProvider ProviderOutcome(emptyList(), IllegalStateException("load returned null"))
+                                try {
+                                    ProviderOutcome(linksFromResponse(prov, loaded, requestedS, requestedE))
+                                } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
+                                    ProviderOutcome(emptyList(), t)
+                                } catch (t: CancellationException) {
+                                    throw t
+                                } catch (t: Throwable) {
+                                    ProviderOutcome(emptyList(), t)
+                                }
                             }
                         }
                     }
@@ -480,18 +575,42 @@ object Streams {
                 }
             }
 
-            // pass 1 done (this scope waited for all children); retry each provider
-            // that yielded nothing exactly once - concurrent scraping is flaky
-            val empty = attempted.filter { it !in succeeded }
-            if (empty.isNotEmpty()) {
+            // pass 1 done (this scope waited for all children). Retry ONLY providers
+            // that FAILED (threw / timed out / null load) - providers that searched
+            // fine and have no content are not retried; retrying all ~290 empties
+            // hammered sites for nothing on every lookup.
+            fanOutSummary(kind, id, "pass1", attempted, succeeded, noContent, failed, errorSamples)
+            if (failed.isNotEmpty()) {
                 com.lagradost.cloudstream3.network.CloudflareKiller.resetFailedHosts()
-                AppLogger.i("Streams: retrying ${empty.size} empty providers")
-                for (key in empty) {
+                AppLogger.i("Streams: retrying ${failed.size} failed providers")
+                for (key in failed) {
                     retryDefs[key]?.let { (label, work) ->
                         launchProvider(label, key + ":r", work)
                     }
                 }
             }
+        }
+
+        fanOutSummary(kind, id, "done", attempted, succeeded, noContent, failed, errorSamples)
+    }
+
+    /** One compact line per fan-out phase + the top distinct error shapes. Provider
+     *  failures used to be swallowed silently, which made degraded nights undiagnosable. */
+    private fun fanOutSummary(
+        kind: String,
+        id: String,
+        phase: String,
+        attempted: Set<String>,
+        succeeded: Set<String>,
+        noContent: Set<String>,
+        failed: Set<String>,
+        errorSamples: Map<String, String>,
+    ) {
+        AppLogger.i("Streams: fanout $phase $kind/$id: attempted=${attempted.size} ok=${succeeded.size} noContent=${noContent.size} failed=${failed.size}")
+        if (errorSamples.isNotEmpty()) {
+            errorSamples.values.groupingBy { it }.eachCount()
+                .entries.sortedByDescending { it.value }.take(5)
+                .forEach { (err, n) -> AppLogger.i("Streams:   $n × $err") }
         }
     }
 }

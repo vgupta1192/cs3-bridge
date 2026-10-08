@@ -368,6 +368,20 @@
       const ctx = ctxJson ? JSON.parse(ctxJson) : {};
       return JSON.stringify(render(String(nameTpl), String(descTpl), meta, ctx));
     },
+    // templates + [[metaJson, ctxJson], ...] -> [rendered-or-null, ...]
+    // (one polyglot hop for a whole serve instead of one execute per link)
+    renderBatch(nameTpl, descTpl, arrJson) {
+      let arr;
+      try { arr = JSON.parse(arrJson); } catch (e) { return "[]"; }
+      const out = arr.map((it) => {
+        try {
+          const meta = it && it[0] ? JSON.parse(it[0]) : {};
+          const ctx = it && it[1] ? JSON.parse(it[1]) : {};
+          return JSON.parse(render(String(nameTpl), String(descTpl), meta, ctx));
+        } catch (e) { return null; }
+      });
+      return JSON.stringify(out);
+    },
     // templates -> [{label, name, description}]
     preview(nameTpl, descTpl) {
       return JSON.stringify(previewJson(String(nameTpl || ""), String(descTpl || "")));

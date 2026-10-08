@@ -239,6 +239,9 @@ object HttpApi {
             val entry = runCatching { mapper.readValue<Map<String, Any?>>(cached) }.getOrNull() ?: mapOf("streams" to emptyList<Any?>())
             if (entry["incomplete"] == true) {
                 Streams.rescrapeAsync(cfg, kind, id, cacheKey)
+            } else {
+                // degraded entries (scraped during a provider outage window) self-heal
+                Streams.maybeRescrapeDegraded(cfg, kind, id, cacheKey, entry)
             }
             sendJson(ex, 200, mapOf("streams" to (entry["streams"] ?: emptyList<Any?>())))
             return

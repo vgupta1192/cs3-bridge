@@ -60,6 +60,16 @@ object Formatter {
         return mapper.readValue<Rendered>(res.asString())
     }
 
+    /** Render many streams in ONE polyglot hop; null entries = use built-in naming.
+     *  Per-serve formatter cost used to scale with stream count (one JS execute each);
+     *  fresh answers blew way past the configured response deadline as a result. */
+    fun renderBatch(t: Templates, items: List<Pair<String, String>>): List<Rendered?> {
+        if (items.isEmpty()) return emptyList()
+        val arr = mapper.writeValueAsString(items.map { listOf(it.first, it.second) })
+        val res = synchronized(lock) { ensure().getMember("renderBatch").execute(t.name, t.description, arr).asString() }
+        return mapper.readValue<List<Rendered?>>(res)
+    }
+
     /** {presets: [{id,label,family,name,description}], fields: {section: [props]}} */
     fun presets(): Map<String, Any?> {
         val res = synchronized(lock) { ensure().getMember("presets").execute() }

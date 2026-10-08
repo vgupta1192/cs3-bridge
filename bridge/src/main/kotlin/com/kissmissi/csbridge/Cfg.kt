@@ -9,6 +9,11 @@ object Cfg {
     val deadlineMs: Long = System.getenv("CSBRIDGE_DEADLINE_MS")?.toLongOrNull() ?: 28000L
     val providerTimeoutMs: Long = System.getenv("CSBRIDGE_PROVIDER_TIMEOUT_MS")?.toLongOrNull() ?: 120000L
     val maxConcurrent: Int = System.getenv("CSBRIDGE_MAX_CONCURRENT")?.toIntOrNull() ?: 48
+    // degraded-cache self-heal: cached entries with fewer streams than this get one
+    // background rescrape per rescrapeMinAgeMs when requested (an entry written during
+    // a provider rate-limit window used to serve its thin result as final for 6h)
+    val rescrapeMinStreams: Int = System.getenv("CSBRIDGE_RESCRAPE_MIN_STREAMS")?.toIntOrNull() ?: 30
+    val rescrapeMinAgeMs: Long = System.getenv("CSBRIDGE_RESCRAPE_MIN_AGE_MS")?.toLongOrNull() ?: (30L * 60 * 1000)
     val tmdbKey: String? = System.getenv("TMDB_API_KEY")?.takeIf { it.isNotBlank() }
     val version: String = System.getenv("CSBRIDGE_VERSION") ?: "1.0.0"
 
