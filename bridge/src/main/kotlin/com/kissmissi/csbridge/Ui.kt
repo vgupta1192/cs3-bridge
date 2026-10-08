@@ -455,7 +455,7 @@ function repoOf(p){ return ((DATA&&DATA.repos)||[]).find(r => r.plugins.indexOf(
 function save(){ localStorage.setItem('csb_state2', JSON.stringify(state)); }
 function gen() {
   const cfg = Object.assign({}, state);
-  delete cfg.f; delete cfg.n; delete cfg.d;
+  delete cfg.f; delete cfg.n; delete cfg.d; delete cfg.dl;
   delete cfg.fmt; delete cfg.fmtName; delete cfg.fmtTitle;
   if (state.f === 'custom') cfg.fmt = { f: 'custom', n: state.n || '', d: state.d || '' };
   else if (state.f && state.f !== 'builtin') cfg.fmt = { f: state.f };

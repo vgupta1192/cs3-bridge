@@ -379,11 +379,15 @@ object Streams {
                 val got = r.getOrNull() ?: break
                 synchronized(collected) { collected.add(got) }
                 // fast-first: a useful partial beats the full wait — apps time out
-                // around 15-30 s, so waiting the whole deadline served empty pages
+                // around 15-30 s, so waiting the whole deadline served empty pages.
+                // Both gates count: enough links AND enough distinct providers
+                // (one chatty fast provider must not own the whole first page)
                 val elapsed = System.currentTimeMillis() - start
                 if (elapsed >= Cfg.fastWindowMs) {
-                    val n = synchronized(collected) { collected.sumOf { it.second.size } }
-                    if (n >= Cfg.fastMinStreams) break
+                    val (n, provs) = synchronized(collected) {
+                        collected.sumOf { it.second.size } to collected.map { it.first }.distinct().size
+                    }
+                    if (n >= Cfg.fastMinStreams && provs >= Cfg.fastMinProviders) break
                 }
             }
         }
