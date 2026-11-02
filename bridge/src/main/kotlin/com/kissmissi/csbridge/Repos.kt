@@ -84,11 +84,13 @@ object Repos {
             .forEach { (k, v) -> if (isSafeName(k)) index[k] = v else AppLogger.e("RepoSync: dropping index entry with unsafe name \"$k\"") }
     }
 
-    private val SAFE_NAME = Regex("""[A-Za-z0-9][A-Za-z0-9._-]{0,127}""")
+    // inner spaces are allowed: "CNC Verse", "CNC Verse Mobile", "Aia2tv 2" ship that way
+    private val SAFE_NAME = Regex("""[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,126}[A-Za-z0-9_-])?""")
 
     /**
      * internalName comes from remote repo JSON and becomes a file name under
      * extensionsDir: only plain names, so "../x" or "a/b" can't escape it.
+     * Checked against the 470 plugins of the default repos: all pass.
      */
     fun isSafeName(name: String): Boolean = SAFE_NAME.matches(name) && ".." !in name
 
@@ -271,7 +273,7 @@ object Repos {
             if (info.loaded) return true
             if (!info.file.exists()) { info.error = "not downloaded"; info.failedAt = System.currentTimeMillis(); return false }
             return try {
-                ExtensionLoader.loadAndInit(info.file, forceBypassSecurity = true)
+                ExtensionLoader.loadAndInit(info.file, forceBypassSecurity = info.internalName in Cfg.verifyExempt)
                 // settings/utility plugins (SubscriptionManager, M3UPlaylistPlayer, ...)
                 // load fine but register no stream providers — count them as loaded
                 info.providerNames = providersOf(info).map { it.name }

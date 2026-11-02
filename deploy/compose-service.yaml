@@ -13,7 +13,16 @@
       - CSBRIDGE_ADMIN_TOKEN=${CSBRIDGE_ADMIN_TOKEN:-}
       - TMDB_API_KEY=${WATCHLY_TMDB_API_KEY:-}
     volumes:
-      - ./cs3-bridge/data:/app/data
+      - ./cs3-bridge/data:/app/data   # owned by 10001:10001 (the image's non-root user)
+    # plugins are third-party code running in this process: keep the container
+    # itself minimal. Only /app/data and /tmp (sqlite-jdbc unpacks its native
+    # library there) are writable
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "127.0.0.1:7095:7095"
     labels:

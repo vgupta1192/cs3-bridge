@@ -19,6 +19,7 @@ fun main() {
         System.setOut(java.io.PrintStream(LineCapStream(fd, max), true, "UTF-8"))
     }
     AppLogger.i("CloudStream Bridge ${Cfg.version} starting…")
+    checkDataDirWritable()
     Boot.init()
     // cached stream lists embed the formatter output — flush them whenever the
     // deployed version changes so old formatting never lingers past a deploy
@@ -47,4 +48,29 @@ fun main() {
         }
     }.apply { isDaemon = true; name = "kv-cleanup" }.start()
     AppLogger.i("CloudStream Bridge ready")
+}
+
+/**
+ * The image runs as uid 10001. A data dir created by an older root-run
+ * container (bind mount) is root-owned and unwritable: say how to fix it
+ * instead of failing later inside SQLite or the plugin sync.
+ */
+private fun checkDataDirWritable() {
+    val dir = Cfg.dataDir
+    val probe = java.io.File(dir, ".write-test")
+    val ok = runCatching {
+        dir.mkdirs()
+        probe.writeText("ok")
+        // files written by the old root container are what actually break
+        dir.walkTopDown().maxDepth(2).all { it.canWrite() }
+    }.getOrDefault(false)
+    runCatching { probe.delete() }
+    if (!ok) {
+        AppLogger.e(
+            "Data dir ${dir.absolutePath} (or files in it) is not writable by user ${System.getProperty("user.name")}. " +
+                "If it was created by an older root-run container, run once on the host: " +
+                "chown -R 10001:10001 <host path of the data dir>"
+        )
+        kotlin.system.exitProcess(1)
+    }
 }

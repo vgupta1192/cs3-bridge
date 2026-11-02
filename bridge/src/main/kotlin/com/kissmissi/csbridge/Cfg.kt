@@ -66,6 +66,9 @@ object Cfg {
     val warmFreshMs: Long = System.getenv("CSBRIDGE_WARM_FRESH_MS")?.toLongOrNull() ?: (20L * 3600 * 1000)
     val warmLiveQuietMs: Long = System.getenv("CSBRIDGE_WARM_LIVE_QUIET_MS")?.toLongOrNull() ?: 20000L
     val warmCatalogFilter: Set<String> = (System.getenv("CSBRIDGE_WARM_CATALOGS") ?: "").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+    // plugins (internalName, comma-separated) whose jar skips the static bytecode
+    // check in PluginSecurityVerifier; empty = every plugin is verified
+    val verifyExempt: Set<String> = (System.getenv("CSBRIDGE_VERIFY_EXEMPT") ?: "").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
     val tmdbKey: String? = System.getenv("TMDB_API_KEY")?.takeIf { it.isNotBlank() }
     val version: String = System.getenv("CSBRIDGE_VERSION") ?: "1.0.0"
 

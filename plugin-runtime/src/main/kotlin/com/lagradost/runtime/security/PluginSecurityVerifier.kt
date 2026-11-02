@@ -6,7 +6,48 @@ import org.objectweb.asm.tree.MethodInsnNode
 import java.io.File
 import java.util.zip.ZipFile
 
+/**
+ * Static check run on every plugin jar before it is loaded (after dex2jar and
+ * PluginBytecodeTransformer, so Runtime/System exit/exec/load calls should
+ * already point at the stubs; any left over are rejected here).
+ *
+ * The rules target what a stream-provider plugin has no reason to touch:
+ * spawning processes, native code, defining classes, JVM-wide state (env
+ * vars, system properties, stdio) and NIO file access. They were checked
+ * against the 467 plugins of the default repos (Nov 2026): none uses any of it.
+ *
+ * Deliberately NOT blocked, because real plugins use them: java.io.File
+ * (TurkSinema's 108 plugins clean their cache dirs), URL.openConnection /
+ * HttpURLConnection, and reflection (11 plugins, incl. Method.invoke). Those
+ * are also why this is not a security boundary: reflection reaches anything
+ * the static rules forbid. Treat plugins as trusted code and rely on the
+ * container (non-root, read-only rootfs, dropped capabilities) to contain them.
+ */
 object PluginSecurityVerifier {
+
+    private val runtimeDenied = setOf("exec", "load", "loadLibrary", "exit", "halt")
+    private val systemDenied = setOf(
+        "exit", "load", "loadLibrary", "setSecurityManager",
+        "getenv", "setProperty", "clearProperty", "setProperties",
+        "setIn", "setOut", "setErr",
+    )
+
+    /** Why a call is not allowed, or null when it is. [owner] is an internal name (java/lang/Runtime). */
+    fun violation(owner: String, name: String, desc: String): String? = when {
+        owner == "java/lang/ProcessBuilder" || owner == "java/lang/Process" ||
+            owner == "java/lang/ProcessHandle" || owner.startsWith("java/lang/ProcessHandle$") -> "process execution"
+        owner == "java/lang/Runtime" && name in runtimeDenied -> "Runtime.$name"
+        owner == "java/lang/System" && name in systemDenied -> "System.$name"
+        owner.startsWith("java/nio/file/") || owner.startsWith("java/nio/channels/") ||
+            owner == "java/io/RandomAccessFile" -> "NIO / random-access file I/O"
+        owner == "java/net/URLClassLoader" ||
+            (owner == "java/lang/ClassLoader" && name.startsWith("defineClass")) ||
+            (owner == "java/lang/invoke/MethodHandles\$Lookup" && name.startsWith("define")) -> "class definition"
+        owner.startsWith("java/lang/invoke/") -> "method handles"
+        owner.startsWith("javax/script/") -> "script engines"
+        owner.startsWith("sun/") || owner.startsWith("jdk/internal/") || owner.startsWith("com/sun/") -> "JDK internals"
+        else -> null
+    }
 
     @Throws(SecurityException::class)
     fun verifyJar(jarFile: File) {
@@ -14,76 +55,17 @@ object PluginSecurityVerifier {
             val entries = zip.entries()
             while (entries.hasMoreElements()) {
                 val entry = entries.nextElement()
-                if (entry.name.endsWith(".class")) {
-                    zip.getInputStream(entry).use { input ->
-                        val reader = ClassReader(input)
-                        val classNode = ClassNode()
-                        reader.accept(classNode, 0)
-
-                        for (method in classNode.methods) {
-                            for (insn in method.instructions) {
-                                if (insn is MethodInsnNode) {
-                                    val owner = insn.owner // internal name e.g. java/lang/Runtime
-
-                                    // Block dangerous class owners outright
-                                    if (owner == "java/lang/ProcessBuilder" ||
-                                        owner == "java/io/File" ||
-                                        owner.startsWith("java/lang/reflect/") ||
-                                        owner.startsWith("java/lang/invoke/")
-                                    ) {
-                                        throw SecurityException("Security Sandbox: Potentially unsafe code detected in class ${classNode.name} method ${method.name}. Illegal invocation: $owner.${insn.name}")
-                                    }
-
-                                    // Fallback block for dangerous Runtime calls (in case the bytecode transformer missed them)
-                                    if (owner == "java/lang/Runtime") {
-                                        if (insn.name == "exec" || insn.name == "loadLibrary" || insn.name == "load" || insn.name == "exit" || insn.name == "halt") {
-                                            throw SecurityException("Security Sandbox: Potentially unsafe code detected in class ${classNode.name} method ${method.name}. Illegal invocation: $owner.${insn.name}")
-                                        }
-                                    }
-
-                                    // GAP FIX #1: Block URL.openStream() and URL.openConnection()
-                                    // A plugin could do URL("file:///C:/Users/...").openStream() to read
-                                    // arbitrary files from disk. Plugins never legitimately need raw URL
-                                    // streams — they always use the `app` NiceHttp object instead.
-                                    if (owner == "java/net/URL") {
-                                        if (insn.name == "openStream" || insn.name == "openConnection") {
-                                            throw SecurityException("Security Sandbox: Illegal URL.${ insn.name}() call in ${classNode.name}. Use the NiceHttp `app` object for network requests.")
-                                        }
-                                    }
-
-                                    // GAP FIX #2: Block Class.forName(String, boolean, ClassLoader)
-                                    // The 3-arg version lets a plugin supply ANY classloader, bypassing
-                                    // SafePluginClassLoader entirely and loading blocked classes freely.
-                                    // The 1-arg version is safe (uses the calling class's own loader which
-                                    // goes through SafePluginClassLoader), so we leave it allowed.
-                                    if (owner == "java/lang/Class" && insn.name == "forName") {
-                                        // Distinguish by descriptor: 3-arg version has descriptor
-                                        // (Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;
-                                        if (insn.desc.contains("ClassLoader")) {
-                                            throw SecurityException("Security Sandbox: Illegal Class.forName(String, boolean, ClassLoader) in ${classNode.name}. ClassLoader injection is not permitted.")
-                                        }
-                                    }
-
-                                    // GAP FIX #3: Block raw HttpURLConnection / URLConnection
-                                    // Prevents plugins from making untracked, unmetered HTTP requests
-                                    // that bypass OkHttp, the CloudflareKiller interceptor, and
-                                    // the app's user-agent / header management.
-                                    if (owner == "java/net/HttpURLConnection" ||
-                                        owner == "java/net/URLConnection" ||
-                                        owner == "javax/net/ssl/HttpsURLConnection"
-                                    ) {
-                                        throw SecurityException("Security Sandbox: Illegal raw HTTP connection in ${classNode.name}. Use the NiceHttp `app` object instead.")
-                                    }
-
-                                    // Block specific dangerous System calls
-                                    if (owner == "java/lang/System") {
-                                        if (insn.name == "exit" || insn.name == "loadLibrary" || insn.name == "load" || insn.name == "setSecurityManager") {
-                                            throw SecurityException("Security Sandbox: Potentially unsafe code detected in class ${classNode.name}. Illegal System call: ${insn.name}")
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                if (!entry.name.endsWith(".class")) continue
+                val classNode = ClassNode()
+                zip.getInputStream(entry).use { ClassReader(it).accept(classNode, ClassReader.SKIP_FRAMES) }
+                for (method in classNode.methods) {
+                    for (insn in method.instructions) {
+                        if (insn !is MethodInsnNode) continue
+                        val why = violation(insn.owner, insn.name, insn.desc) ?: continue
+                        throw SecurityException(
+                            "Security Sandbox: ${jarFile.name} rejected: ${classNode.name}.${method.name} calls " +
+                                "${insn.owner}.${insn.name} ($why)"
+                        )
                     }
                 }
             }

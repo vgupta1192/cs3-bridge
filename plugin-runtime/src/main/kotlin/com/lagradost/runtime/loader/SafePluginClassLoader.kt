@@ -142,63 +142,77 @@ class SafePluginClassLoader(
         }
     }
 
-    private fun isBlocked(name: String): Boolean {
-        // Unsafe NIO (channels, files) blocked; charset + buffers allowed.
-        // java.io.File and java.lang.reflect.* are ALLOWED (plugins use both
-        // legitimately; blocking them broke AnimeRift's static init and six
-        // 3rabi providers at class load).
-        if (name.startsWith("java.nio.")) {
-            if (!name.startsWith("java.nio.charset.") && !name.contains("Buffer")) {
-                return true
-            }
-        }
+    private fun isBlocked(name: String): Boolean = isBlockedClass(name)
+}
 
-        // Block OS command execution
-        if (name == "java.lang.ProcessBuilder") {
+/**
+ * Classes no plugin-defined class may link against. Shared by
+ * [SafePluginClassLoader] and [SharedDepsLoader]: plugin classes resolved
+ * through the shared loader (cross-plugin imports, and every class of a plugin
+ * loaded on the shared-deps retry) are defined by IT, so without the same check
+ * there they could link to anything.
+ */
+internal fun isBlockedClass(name: String): Boolean {
+    // Unsafe NIO (channels, files) blocked; charset + buffers allowed.
+    // java.io.File and java.lang.reflect.* are ALLOWED (plugins use both
+    // legitimately; blocking them broke AnimeRift's static init and six
+    // 3rabi providers at class load).
+    if (name.startsWith("java.nio.")) {
+        if (!name.startsWith("java.nio.charset.") && !name.contains("Buffer")) {
             return true
         }
-
-        // Reflection is ALLOWED — trusted plugins use it legitimately
-        // (Gson/Jackson adapters, Companion access); blocking it broke six
-        // 3rabi providers at class-init. Method handles / sun.* / jdk.internal
-        // stay blocked to keep the sandbox meaningful.
-
-        // Block method handles but ALLOW LambdaMetafactory and StringConcatFactory required for Java 8+ lambdas
-        if (name.startsWith("java.lang.invoke.")) {
-            val safeInvoke = setOf(
-                "java.lang.invoke.LambdaMetafactory",
-                "java.lang.invoke.MethodHandles",
-                "java.lang.invoke.MethodHandles\$Lookup",
-                "java.lang.invoke.MethodType",
-                "java.lang.invoke.CallSite",
-                "java.lang.invoke.ConstantCallSite",
-                "java.lang.invoke.MutableCallSite",
-                "java.lang.invoke.VolatileCallSite",
-                "java.lang.invoke.StringConcatFactory",
-                "java.lang.invoke.TypeDescriptor",
-                "java.lang.invoke.TypeDescriptor\$OfField",
-                "java.lang.invoke.TypeDescriptor\$OfMethod"
-            )
-            if (!safeInvoke.contains(name)) {
-                return true
-            }
-        }
-
-        // Block compiler and unsafe memory access
-        if (name.startsWith("sun.misc.") || name.startsWith("jdk.internal.") || name.startsWith("sun.reflect.")) {
-            return true
-        }
-
-        // Block raw sockets
-        if (name == "java.net.Socket" || name == "java.net.ServerSocket" || name == "java.net.DatagramSocket") {
-            return true
-        }
-
-        return false
     }
+
+    // Block OS command execution
+    if (name == "java.lang.ProcessBuilder") {
+        return true
+    }
+
+    // Reflection is ALLOWED — trusted plugins use it legitimately
+    // (Gson/Jackson adapters, Companion access); blocking it broke six
+    // 3rabi providers at class-init. Method handles / sun.* / jdk.internal
+    // stay blocked to keep the sandbox meaningful.
+
+    // Block method handles but ALLOW LambdaMetafactory and StringConcatFactory required for Java 8+ lambdas
+    if (name.startsWith("java.lang.invoke.")) {
+        val safeInvoke = setOf(
+            "java.lang.invoke.LambdaMetafactory",
+            "java.lang.invoke.MethodHandles",
+            "java.lang.invoke.MethodHandles\$Lookup",
+            "java.lang.invoke.MethodType",
+            "java.lang.invoke.CallSite",
+            "java.lang.invoke.ConstantCallSite",
+            "java.lang.invoke.MutableCallSite",
+            "java.lang.invoke.VolatileCallSite",
+            "java.lang.invoke.StringConcatFactory",
+            "java.lang.invoke.TypeDescriptor",
+            "java.lang.invoke.TypeDescriptor\$OfField",
+            "java.lang.invoke.TypeDescriptor\$OfMethod"
+        )
+        if (!safeInvoke.contains(name)) {
+            return true
+        }
+    }
+
+    // Block compiler and unsafe memory access
+    if (name.startsWith("sun.misc.") || name.startsWith("jdk.internal.") || name.startsWith("sun.reflect.")) {
+        return true
+    }
+
+    // Block raw sockets
+    if (name == "java.net.Socket" || name == "java.net.ServerSocket" || name == "java.net.DatagramSocket") {
+        return true
+    }
+
+    return false
 }
 
 /** URLClassLoader with a public addURL — hosts the shared cross-plugin jar space. */
 class SharedDepsLoader(parent: ClassLoader) : java.net.URLClassLoader(emptyArray(), parent) {
     public override fun addURL(url: java.net.URL) = super.addURL(url)
+
+    override fun loadClass(name: String, resolve: Boolean): Class<*> {
+        if (isBlockedClass(name)) throw SecurityException("Security Sandbox: Access to class '$name' is blocked.")
+        return super.loadClass(name, resolve)
+    }
 }

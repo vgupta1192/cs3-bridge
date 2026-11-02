@@ -124,14 +124,13 @@ object ExtensionLoader {
 
         AppLogger.i("Loading plugin class: $pluginClassName from ${jarToLoad.absolutePath}")
 
-        if (!forceBypassSecurity && !isTrusted(jarToLoad)) {
-            AppLogger.i("Running static bytecode security verification on ${jarToLoad.name}...")
+        // Every load is verified. The old name-keyed "trusted_plugins" pref is
+        // no longer consulted: the bridge used to add every plugin to it, and a
+        // name says nothing about what an updated .cs3 under that name contains.
+        if (!forceBypassSecurity) {
             com.lagradost.runtime.security.PluginSecurityVerifier.verifyJar(jarToLoad)
         } else {
-            if (forceBypassSecurity) {
-                addTrusted(jarToLoad)
-            }
-            AppLogger.i("Bypassing static bytecode security verification for trusted plugin ${jarToLoad.name}!")
+            AppLogger.i("Static bytecode verification skipped for ${jarToLoad.name} (exempted by the operator)")
         }
 
         val nativeIntercept = nativePluginInterceptor?.invoke(pluginClassName!!)
@@ -211,33 +210,6 @@ object ExtensionLoader {
         }
         if (proc.exitValue() != 0) {
             throw IllegalStateException("dex2jar failed rc=${proc.exitValue()} on $sourceName")
-        }
-    }
-
-    private fun getTrustedList(): MutableList<String> {
-        val mapper = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
-        val prefs = java.util.prefs.Preferences.userRoot().node("cloudstream_desktop_prefs")
-        val json = prefs.get("trusted_plugins", "[]")
-        return try {
-            mapper.readValue(json, object : com.fasterxml.jackson.core.type.TypeReference<MutableList<String>>() {})
-        } catch (e: Exception) {
-            mutableListOf()
-        }
-    }
-
-    private fun isTrusted(jarFile: File): Boolean {
-        val name = jarFile.nameWithoutExtension.removeSuffix("-jvm")
-        return getTrustedList().contains(name)
-    }
-
-    private fun addTrusted(jarFile: File) {
-        val name = jarFile.nameWithoutExtension.removeSuffix("-jvm")
-        val trusted = getTrustedList()
-        if (!trusted.contains(name)) {
-            trusted.add(name)
-            val mapper = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
-            val prefs = java.util.prefs.Preferences.userRoot().node("cloudstream_desktop_prefs")
-            prefs.put("trusted_plugins", mapper.writeValueAsString(trusted))
         }
     }
 
