@@ -28,6 +28,7 @@ fun main() {
             Store.put("sys:version", Cfg.version)
         }
     }
+    Admin.init()
     HttpApi.start()
     Repos.startBackgroundSync()
     Warmer.start()

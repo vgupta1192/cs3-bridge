@@ -47,7 +47,9 @@ object HttpApi {
     private fun sendJson(ex: HttpExchange, code: Int, body: Any?) {
         val bytes = mapper.writeValueAsBytes(body)
         ex.responseHeaders.add("Content-Type", "application/json; charset=utf-8")
-        ex.responseHeaders.add("Access-Control-Allow-Origin", "*")
+        // addon routes are fetched cross-origin by Stremio/Nuvio web; /api is only
+        // used by our own same-origin configure page, so it gets no CORS grant
+        if (ex.requestURI.path?.startsWith("/api/") != true) ex.responseHeaders.add("Access-Control-Allow-Origin", "*")
         ex.sendResponseHeaders(code, bytes.size.toLong())
         ex.responseBody.use { it.write(bytes) }
     }
@@ -103,6 +105,26 @@ object HttpApi {
     )
 
 
+    /**
+     * Admin-only, POST-only endpoints. Sends the error response and returns false
+     * when the request may not proceed.
+     */
+    private fun admin(ex: HttpExchange): Boolean {
+        if (!ex.requestMethod.equals("POST", ignoreCase = true)) {
+            ex.responseHeaders.add("Allow", "POST")
+            sendJson(ex, 405, mapOf("ok" to false, "error" to "use POST"))
+            return false
+        }
+        if (!Admin.isAuthorized(ex)) {
+            sendJson(ex, 401, mapOf("ok" to false, "error" to "admin token required", "auth" to true))
+            return false
+        }
+        return true
+    }
+
+    private fun isJson(ex: HttpExchange): Boolean =
+        ex.requestHeaders.getFirst("Content-Type")?.lowercase()?.startsWith("application/json") == true
+
     private fun api(ex: HttpExchange, segs: List<String>) {
         val q = ex.requestURI.query ?: ""
         val qp = q.split("&").mapNotNull {
@@ -111,10 +133,12 @@ object HttpApi {
         when (segs.getOrNull(1)) {
             "repos" -> when (segs.getOrNull(2)) {
                 "add" -> {
+                    if (!admin(ex)) return
                     val res = Repos.addRepo(qp["name"] ?: "", qp["url"] ?: "", qp["enable"] != "0")
                     sendJson(ex, 200, mapOf("ok" to res.first, "message" to res.second))
                 }
                 "remove" -> {
+                    if (!admin(ex)) return
                     val res = Repos.removeRepo(qp["url"] ?: "")
                     sendJson(ex, 200, mapOf("ok" to res.first, "message" to res.second))
                 }
@@ -123,6 +147,7 @@ object HttpApi {
             "breakers" -> sendJson(ex, 200, Streams.breakerState())
             "warm" -> sendJson(ex, 200, Warmer.stats())
             "health" -> {
+                if (!admin(ex)) return
                 // ?name=<internalName> = check just that provider, answered when done
                 qp["name"]?.takeIf { it.isNotBlank() }?.let { name ->
                     if (name == StreamMaster.INTERNAL && StreamMaster.enabled) {
@@ -139,6 +164,7 @@ object HttpApi {
                 sendJson(ex, 200, mapOf("ok" to true, "running" to started))
             }
             "resync" -> {
+                if (!admin(ex)) return
                 val force = ex.requestURI.query?.contains("force") == true
                 Thread {
                     try { runBlocking { Repos.sync(force) } } catch (t: Throwable) {
@@ -153,6 +179,9 @@ object HttpApi {
                 // so the manifest URL never changes again)
                 val id = segs.getOrNull(2) ?: return sendJson(ex, 404, mapOf("error" to "install id required"))
                 if (ex.requestMethod.equals("POST", ignoreCase = true)) {
+                    // a JSON content type can't be sent cross-origin without a
+                    // preflight (which is never granted), so this blocks CSRF writes
+                    if (!isJson(ex)) return sendJson(ex, 415, mapOf("ok" to false, "message" to "Content-Type must be application/json"))
                     val body = ex.requestBody.readBytes().toString(Charsets.UTF_8)
                     val oldFp = Installs.fingerprint(id)
                     val (ok, msg) = Installs.save(id, body)

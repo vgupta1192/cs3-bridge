@@ -822,6 +822,30 @@ document.querySelectorAll('[data-hf]').forEach(b => b.onclick = () => {
   renderStatus();
 });
 // one provider's health check: same probe as the full run, result shown everywhere
+// repo add/remove, resync and health checks are admin-only POSTs: the token
+// (data/admin-token on the server, or CSBRIDGE_ADMIN_TOKEN) is asked for once
+// and kept in this browser
+function adminToken(ask) {
+  let t = '';
+  try { t = localStorage.getItem('csbAdmin') || ''; } catch(e) {}
+  if (!t || ask) {
+    t = (prompt('Admin token (from data/admin-token on the server, or CSBRIDGE_ADMIN_TOKEN):') || '').trim();
+    if (t) { try { localStorage.setItem('csbAdmin', t); } catch(e) {} }
+  }
+  return t;
+}
+async function adminFetch(url) {
+  const go = t => fetch(url, { method: 'POST', headers: { 'X-CSB-Admin': t } });
+  let t = adminToken(false);
+  if (!t) throw new Error('admin token required');
+  let r = await go(t);
+  if (r.status === 401) {
+    t = adminToken(true);
+    if (!t) throw new Error('admin token required');
+    r = await go(t);
+  }
+  return r;
+}
 function healthButton(p) {
   const b = document.createElement('button');
   b.className = 'hbtn'; b.textContent = '↻'; b.title = 'Check ' + p.name + ' now';
@@ -831,7 +855,7 @@ function healthButton(p) {
 async function checkProvider(p, btn) {
   if (btn) btn.classList.add('busy');
   try {
-    const r = await fetch('/api/health?name=' + encodeURIComponent(p.internalName));
+    const r = await adminFetch('/api/health?name=' + encodeURIComponent(p.internalName));
     const d = await r.json();
     if (d && d.ok) {
       // update every copy of this plugin in the loaded data, then redraw all views
@@ -894,7 +918,7 @@ function renderRepos() {
     const rm = document.createElement('button'); rm.className = 'btn small danger'; rm.textContent = 'Remove';
     rm.onclick = () => {
       if (!confirm('Remove repo ' + repo.name + ' and stop syncing its plugins?')) return;
-      fetch('/api/repos/remove?url=' + encodeURIComponent(repo.url)).then(r => r.json()).then(d => { document.getElementById('addMsg').textContent = d.message; poll(); });
+      adminFetch('/api/repos/remove?url=' + encodeURIComponent(repo.url)).then(r => r.json()).then(d => { document.getElementById('addMsg').textContent = d.message || d.error; poll(); }).catch(e => { document.getElementById('addMsg').textContent = e.message; });
     };
     // the virtual Stream Master repo is built in: no GitHub page, not removable
     if (repo.url.indexOf('local://') !== 0) div.append(gh, rm);
@@ -953,17 +977,18 @@ document.getElementById('lg-f').onchange = e => { state.lgf = parseInt(e.target.
 document.getElementById('order-reset').onclick = () => { state.order = []; save(); renderFiltersPage(); gen(); };
 document.getElementById('resync').onclick = () => {
   const b = document.getElementById('resync'); b.disabled = true; b.innerHTML = '<span class="spin"></span> syncing…';
-  fetch('/api/resync').then(() => poll()).catch(() => { b.disabled = false; b.textContent = '🔄 Resync repos'; });
+  adminFetch('/api/resync').then(r => { if (!r.ok) throw new Error(); poll(); }).catch(() => { b.disabled = false; b.textContent = '🔄 Resync repos'; });
 };
 document.getElementById('healthbtn').onclick = () => {
-  fetch('/api/health').then(() => poll()).catch(() => {});
+  adminFetch('/api/health').then(() => poll()).catch(() => {});
 };
 document.getElementById('add-btn').onclick = () => {
   const url = document.getElementById('add-url').value.trim();
   if (!url) return;
   document.getElementById('addMsg').textContent = 'Looking up repository…';
-  fetch('/api/repos/add?url=' + encodeURIComponent(url) + '&name=' + encodeURIComponent(document.getElementById('add-name').value.trim()))
-    .then(r => r.json()).then(d => { document.getElementById('addMsg').textContent = d.message; if (d.ok) { REIMPORT_AFTER_SYNC = true; document.getElementById('add-url').value = ''; document.getElementById('add-name').value = ''; poll(); } });
+  adminFetch('/api/repos/add?url=' + encodeURIComponent(url) + '&name=' + encodeURIComponent(document.getElementById('add-name').value.trim()))
+    .then(r => r.json()).then(d => { document.getElementById('addMsg').textContent = d.message || d.error; if (d.ok) { REIMPORT_AFTER_SYNC = true; document.getElementById('add-url').value = ''; document.getElementById('add-name').value = ''; poll(); } })
+    .catch(e => { document.getElementById('addMsg').textContent = e.message; });
 };
 document.getElementById('copy').onclick = () => {
   pushInstall();  // make sure the backend has the config before they paste it

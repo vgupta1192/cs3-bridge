@@ -9,6 +9,8 @@
       - CSBRIDGE_PORT=7095
       - CSBRIDGE_DATA_DIR=/app/data
       - CSBRIDGE_VERSION=1.0.0
+      # admin token for repo add/remove, resync, health checks; empty = generated into data/admin-token
+      - CSBRIDGE_ADMIN_TOKEN=${CSBRIDGE_ADMIN_TOKEN:-}
       - TMDB_API_KEY=${WATCHLY_TMDB_API_KEY:-}
     volumes:
       - ./cs3-bridge/data:/app/data

@@ -81,8 +81,16 @@ object Repos {
     private fun loadIndex() {
         runCatching { mapper.readValue<Map<String, IndexEntry>>(indexFile) }
             .getOrDefault(emptyMap())
-            .forEach { (k, v) -> index[k] = v }
+            .forEach { (k, v) -> if (isSafeName(k)) index[k] = v else AppLogger.e("RepoSync: dropping index entry with unsafe name \"$k\"") }
     }
+
+    private val SAFE_NAME = Regex("""[A-Za-z0-9][A-Za-z0-9._-]{0,127}""")
+
+    /**
+     * internalName comes from remote repo JSON and becomes a file name under
+     * extensionsDir: only plain names, so "../x" or "a/b" can't escape it.
+     */
+    fun isSafeName(name: String): Boolean = SAFE_NAME.matches(name) && ".." !in name
 
     private fun saveIndex() {
         runCatching {
@@ -358,6 +366,16 @@ object Repos {
                 }
                 for (raw in entries) {
                     if (raw.url.isBlank() || raw.internalName.isBlank()) continue
+                    if (!isSafeName(raw.internalName)) {
+                        AppLogger.e("RepoSync: ${repo.name} lists a plugin with unsafe internalName \"${raw.internalName.take(80)}\", skipped")
+                        failed++
+                        continue
+                    }
+                    if (!raw.url.startsWith("https://") && !raw.url.startsWith("http://")) {
+                        AppLogger.e("RepoSync: ${raw.internalName} from ${repo.name} has a non-http URL, skipped")
+                        failed++
+                        continue
+                    }
                     // two repos shipping the same internalName used to overwrite each
                     // other's file and flip-flop versions on every sync: first repo wins
                     seen[raw.internalName]?.let { owner ->
